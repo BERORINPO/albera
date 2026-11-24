@@ -17,6 +17,10 @@ export default {
     ledger_title: 'Ledger · what the AI did / what you decided',
     canvas_label: 'Control room canvas',
     hint: 'Drag to pan · wheel to zoom · Ctrl twice to find the AI cursors',
+    view_label: 'Who moves the view',
+    view_follow: 'Follow Bero',
+    view_own: 'Look myself',
+    view_waiting: '{count} waiting for you',
     choose_failed: 'That choice did not go through.',
   },
   ja: {
@@ -36,6 +40,10 @@ export default {
     ledger_title: '台帳 · AI がしたこと / あなたが決めたこと',
     canvas_label: 'コントロールルームのキャンバス',
     hint: 'ドラッグで移動 · ホイールで拡大縮小 · Ctrl 2 回で AI のカーソルを探す',
+    view_label: '視点を動かす人',
+    view_follow: 'ベロについていく',
+    view_own: '自分で見る',
+    view_waiting: '{count} 件があなた待ち',
     choose_failed: 'その選択は通りませんでした。',
   },
 };

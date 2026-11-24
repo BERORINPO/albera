@@ -371,6 +371,48 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
     const request = { ...prepared, action: dtoOf(computerId, args) };
     return { operationId: `${name}-op`, request, reply: await session.send(request) };
   }
+  // A wsl2 computer (ADR-012, decision 4): its task.start must name its target, and that form fits no other computer. Neither can stand in for the other.
+  describe('a wsl2 computer on the claim pipe', () => {
+    const WSL = 'wsl-1';
+    const TARGET = { task: 'build the project', isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: 'a'.repeat(40) };
+    const withWsl2 = { computers: [{ computerId: 'room-1', vmId: NO_SUCH_VM }, { computerId: WSL, kind: 'wsl2' }] };
+    const send = async (session, name, computerId, args) => session.send({ ...(await session.prepare(name, { purpose: 'guest.command', action: 'task.start', args, computerId })), action: dtoOf(computerId, args) });
+
+    it('takes the wsl2 form for a wsl2 computer, and makes no desktop lease for it', async () => {
+      const { child, desktop, claims } = await start('wsl2-good', withWsl2);
+      assert.deepEqual(await send(claims(), 'wsl2-good', WSL, TARGET), { ok: true, state: 'UNKNOWN', action: 'task.start' });
+      assert.equal(child.lines.includes('LEASE=GRANTED'), false);
+      for (const mode of ['view', 'act']) {
+        const client = await connect(desktop);
+        client.send({ open: { computerId: WSL, mode, ...(mode === 'act' ? { operationId: 'wsl2-good-op', leaseGeneration: 1 } : {}) } });
+        assert.deepEqual(await client.json(), DENIED, `${mode}: a wsl2 computer has no desktop`);
+        client.socket.destroy();
+      }
+      await stop(child);
+    });
+
+    it('refuses every other form for a wsl2 computer, and the wsl2 form for a VM', async () => {
+      const { child, claims } = await start('wsl2-bad', withWsl2);
+      const session = claims();
+      const cases = [
+        ['the task alone', WSL, { task: TARGET.task }], ['a VM', WSL, { task: TARGET.task, vmId: NO_SUCH_VM, expectedGeneration: 1 }], ['another isolation', WSL, { ...TARGET, isolation: 'vm' }],
+        ['no commit', WSL, { task: TARGET.task, isolation: 'wsl2', repositoryId: 'repo-alpha' }], ['a branch name for a commit', WSL, { ...TARGET, baseOid: 'main' }], ['a short commit', WSL, { ...TARGET, baseOid: 'a'.repeat(39) }],
+        ['a path for a repository', WSL, { ...TARGET, repositoryId: 'C:/repo' }], ['one more arg', WSL, { ...TARGET, extra: 'x' }], ['a VM beside the target', WSL, { ...TARGET, vmId: NO_SUCH_VM }],
+        ['the wsl2 form for a VM computer', 'room-1', TARGET],
+      ];
+      for (const [label, computerId, args] of cases) assert.deepEqual(await send(session, `bad-${cases.findIndex((c) => c[0] === label)}`, computerId, args), DENIED, label);
+      assert.equal(child.lines.filter((line) => line === 'DENY=action_invalid').length, cases.length);
+      await stop(child);
+    });
+
+    it('opens no desktop pipe for a config with only wsl2 computers', async () => {
+      const { child, desktop, claims } = await start('wsl2-only', { computers: [{ computerId: WSL, kind: 'wsl2' }] });
+      assert.deepEqual(await send(claims(), 'wsl2-only', WSL, TARGET), { ok: true, state: 'UNKNOWN', action: 'task.start' });
+      await assert.rejects(connectOnce(desktop), { code: 'ENOENT' }, 'no desktop pipe');
+      await stop(child);
+    });
+  });
+
   async function claimed(session, name, computerId, args) {
     const claim = await claimTaskStart(session, name, computerId, args);
     assert.deepEqual(claim.reply, TASK_SUCCESS, `claim ${name}`);

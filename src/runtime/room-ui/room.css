@@ -33,7 +33,19 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 }
 .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.04em; }
 #counts { font-variant-numeric: tabular-nums; }
+.view-notice { color: var(--wait); white-space: nowrap; }
+.view-switch { display: inline-flex; flex: none; }
+.view-switch[hidden] { display: none; }
+.view-switch button { white-space: nowrap; }
+.view-switch button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.view-switch button:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.view-switch button[aria-pressed="true"] { background: var(--accent-fill); color: var(--on-accent); border-color: transparent; font-weight: 700; }
 #phase { max-width: 50vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 720px) {
+  .top { flex-wrap: wrap; gap: 8px; padding: 6px 12px; }
+  .top .grow { display: none; }
+}
 
 /* unlock form (same flow as the wall) */
 .bootstrap { margin: 12vh auto 0; width: min(520px, calc(100vw - 32px)); padding: 20px 24px; background: var(--paper); border: 1px solid var(--rule); border-radius: 10px; }

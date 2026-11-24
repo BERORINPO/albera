@@ -99,6 +99,17 @@ internal static partial class Harness
             ApprovalPrompt mismatch = PromptOf(Entry(digest: "sha256:" + new string('0', 64)));
             Assert(mismatch.Block == BlockReason.DigestMismatch && !mismatch.CanApprove && mismatch.Choices.Count == 0 && mismatch.BlockText.Length > 0, "mismatch: deny only");
         });
+        Check("GUI prompt: a wsl2 task.start says it is weaker than a VM, in our own fixed text, and shows its target; a VM start does not", () =>
+        {
+            string oid = new('a', 40);
+            string dto = $"{{\"action\":\"task.start\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{{\"task\":\"fix\",\"isolation\":\"wsl2\",\"repositoryId\":\"repo-1\",\"baseOid\":\"{oid}\"}}}}";
+            ApprovalPrompt wsl2 = PromptOf(Entry(Id1, dto, GuestDigest(dto), purpose: "guest.command"));
+            Assert(wsl2.CanApprove && wsl2.Summary == ApprovalPrompt.Wsl2StartSummary && wsl2.Summary.Contains("VM より弱い") && wsl2.Summary.Contains("あなたとして"), wsl2.Summary);
+            string details = string.Join("|", wsl2.Details.Select(l => $"{l.Label}: {string.Concat(l.Runs.Select(r => r.Text))}"));
+            foreach (string field in new[] { "コンピューター: pc-01", "隔離: wsl2", "リポジトリ: repo-1", $"元のコミット: {oid}" }) Assert(details.Contains(field), $"details show {field}");
+            ApprovalPrompt vm = PromptOf(TaskEntry("fix"));
+            Assert(!vm.Summary.Contains("WSL2") && vm.Details.Any(l => l.Label == "VM"), "a VM start keeps its text");
+        });
         Check("GUI prompt: non-ASCII characters are split into highlighted runs; the task text is shown as sent; the summary is Japanese", () =>
         {
             IReadOnlyList<TextRun> runs = ApprovalPrompt.Runs("abc日本語def");

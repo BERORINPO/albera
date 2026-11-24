@@ -110,6 +110,8 @@ public static class ReceiptV3
         // The digest is there exactly when a no-person receipt for an attested action needs it: never for a person's approval, never for an action that needs no attestation.
         if (r.ContainsKey(AttestationDigestField) != (basis == BasisPolicy && AttestedPolicyBasisActions.Contains(action))) return Fail("attestation", AttestationDigestField);
         if (basis == BasisPolicy && AttestedPolicyBasisActions.Contains(action) && !(ctx!.Action is not null && ActionVmId(ctx.Action) is { } vmId && NetworkAttestation.IsVmId(vmId))) return Fail("attestation", "vmId");
+        // An action that names an isolation class always had a person (ADR-012, decision 4): no attestation can stand in for one, at any tier.
+        if (basis == BasisPolicy && ctx!.Action is not null && ActionNamesIsolation(ctx.Action)) return Fail("attestation", "isolation");
         if (exp <= iat || exp - iat > ReceiptV2.MaxTtlSeconds) return Fail("ttl", "exp");
         if (iat > now + ReceiptV2.MaxIatSkewSeconds) return Fail("not_yet_valid", "iat");
         if (now >= exp) return Fail("expired", "exp");
@@ -121,6 +123,8 @@ public static class ReceiptV3
         if ((string)r["actionDigest"] != ActionDigest.Compute(purpose, ctx!.Action)) return Fail("action_digest", "actionDigest");
         return parsed;
     }
+
+    private static bool ActionNamesIsolation(IReadOnlyDictionary<string, object> dto) => dto.TryGetValue("args", out object? args) && args is IReadOnlyDictionary<string, object> map && map.ContainsKey("isolation");
 
     private static string? ActionVmId(IReadOnlyDictionary<string, object> dto) =>
         dto.TryGetValue("args", out object? args) && args is IReadOnlyDictionary<string, object> map && map.TryGetValue("vmId", out object? id) ? id as string : null;

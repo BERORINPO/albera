@@ -8,6 +8,7 @@ import {
   FIXED_VARIABLES, HOST_BUILD_SDK, INHERITED_VARIABLES, NUGET_CONFIG, REG_EXE, USER_IMPORT_SWITCHES, buildArguments, createBuildContext, parseRegistryValue, printBuildIdentity, queryRegistry,
   resolveTrustedDotnet, restoreArguments, sanitisedEnvironment, sdkMismatch,
 } from '../scripts/dotnet-build-env.mjs';
+import { sdkFoldersToRemove } from '../scripts/ci-keep-host-build-sdk.mjs';
 
 // Issue #102: the helper's decisions are pure functions of registry values and a file-system view, so none of this runs dotnet or reg.exe.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -200,9 +201,20 @@ test('the host builds refuse any SDK but the pinned one, and both workflows inst
     const text = fs.readFileSync(path.join(root, '.github', 'workflows', workflow), 'utf8');
     const pins = [...text.matchAll(/dotnet-version:\s*(\S+)/gu)].map((m) => m[1]);
     assert.deepEqual(pins, [HOST_BUILD_SDK], `${workflow} installs exactly HOST_BUILD_SDK`);
+    const install = text.indexOf('dotnet-version:');
+    const keep = text.indexOf('node scripts/ci-keep-host-build-sdk.mjs');
+    const firstBuild = text.indexOf('npm run build:');
+    assert.ok(install > 0 && keep > install && keep < firstBuild, `${workflow} removes the image's other SDKs after setup-dotnet and before the first build`);
   }
   for (const script of ['publish-windows-broker.mjs', 'publish-windows-approval-authority.mjs', 'publish-control-plane-host.mjs']) {
     const text = fs.readFileSync(path.join(root, 'scripts', script), 'utf8');
     assert.ok(text.indexOf('requireHostBuildSdk(context)') > 0 && text.indexOf('requireHostBuildSdk(context)') < text.indexOf('restoreAndBuild(context'), `${script} checks the SDK before restore`);
   }
+});
+
+test('CI keeps HOST_BUILD_SDK and removes every other SDK folder, and refuses when setup-dotnet did not install it', () => {
+  assert.deepEqual(sdkFoldersToRemove(['10.0.302', HOST_BUILD_SDK, '11.0.100']), ['10.0.302', '11.0.100']);
+  assert.deepEqual(sdkFoldersToRemove([HOST_BUILD_SDK]), []);
+  assert.throws(() => sdkFoldersToRemove(['11.0.100']), /^Error: missing_host_build_sdk: /u);
+  assert.throws(() => sdkFoldersToRemove([]), /found: nothing/u);
 });

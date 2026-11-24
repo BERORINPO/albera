@@ -16,11 +16,14 @@ using System.Text.Json;
 // The optional `computers` key lists the room's VMs for the desktop operations (ADR-002 Amendment 2026-11-03): at most 8 entries { "computerId": <contract id>,
 // "vmId": <lowercase GUID of the VM> }, each id and each GUID at most once. The caller only ever names a computerId; the GUID is what the Broker queries by. A config without the
 // key is valid and has no desktop computers.
+// An entry may instead be { "computerId": <contract id>, "kind": "wsl2" } (ADR-012, decision 4): a computer with no VM, kept in its own list so that nothing on the desktop side can reach it. A computerId appears once across both kinds.
+// The optional `attestation` key (ADR-002 Amendment 2026-11-04, "Config additions"): { "keyName": <CNG key name, 1..64 of letters digits . _ ->, "keyId": <contract id> }, both required. The Broker opens that machine key at start
+// (AttestationKey.cs) to sign the run lease of a wsl2 task.start claim, and never creates it; a bad shape is `attestation`, and a key that cannot be opened stops the start (exit 77). Without it a wsl2 claim gets no lease.
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
 // The config file and the database folder (plus an existing journal / -wal / -shm) must also be owned and writable only by trusted principals and
 // free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start. Once the loop runs it
 // holds the database folder open without FILE_SHARE_DELETE (DatabaseFolderPin.cs); a folder that cannot be pinned ends the start with `database_pin`.
-internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation, string LeaseId, string PolicyVersion, IReadOnlyList<ComputerBinding> Computers)
+internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation, string LeaseId, string PolicyVersion, IReadOnlyList<ComputerBinding> Computers, IReadOnlyList<string> Wsl2Computers, AttestationConfig? Attestation)
 {
     private const int MaxFileBytes = 4096;
     private const int MaxPipeNameLength = 128;
@@ -29,10 +32,14 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
     private const int MaxAuthorityKeys = 2;
     private const int MaxComputers = 8;
     private const string ComputersKey = "computers";
+    private const string AttestationKey = "attestation";
+    private static readonly string[] AttestationFields = ["keyName", "keyId"];
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
     private static readonly string[] Keys = ["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation", "leaseId", "policyVersion"];
     private static readonly string[] AuthorityKeyFields = ["kid", "spki"];
     private static readonly string[] ComputerFields = ["computerId", "vmId"];
+    private static readonly string[] Wsl2ComputerFields = ["computerId", "kind"];
+    private const string Wsl2Kind = "wsl2";
 
     // The only reason words ever printed (SERVICE_CONFIG=invalid:<reason>).
     internal static class Reason
@@ -41,7 +48,7 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             Keys = "config_keys", PipeName = "pipe_name", Database = "database", DatabaseDirectory = "database_directory",
             AuthorityKeys = "authority_keys", ControlPlaneSid = "control_plane_sid", Generation = "generation", LeaseId = "lease_id", PolicyVersion = "policy_version",
             ConfigUntrusted = "config_untrusted", DatabaseUntrusted = "database_untrusted", DatabasePin = "database_pin",
-            Computers = "computers";
+            Computers = "computers", Attestation = "attestation";
     }
 
     public static ServiceConfig? TryLoad(string configPath, out string reason)
@@ -80,7 +87,8 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             HashSet<string> seen = new(StringComparer.Ordinal);
             foreach (JsonProperty property in root.EnumerateObject())
                 if (!seen.Add(property.Name)) return null; // a repeated key is ambiguous: refuse rather than pick one
-            bool hasComputers = seen.Remove(ComputersKey); // the one optional key
+            bool hasComputers = seen.Remove(ComputersKey); // optional
+            bool hasAttestation = seen.Remove(AttestationKey); // optional
             if (!seen.SetEquals(Keys)) return null;
 
             string? pipeName = AsString(root, "pipeName"), database = AsString(root, "database"), sid = AsString(root, "controlPlaneSid");
@@ -109,13 +117,16 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             if (policyVersion is null || !AuthorityKey.IsKeyId(policyVersion)) return null;
 
             reason = Reason.Computers;
-            IReadOnlyList<ComputerBinding>? computers = hasComputers ? ReadComputers(root.GetProperty(ComputersKey)) : [];
-            if (computers is null) return null;
+            (IReadOnlyList<ComputerBinding> Vms, IReadOnlyList<string> Wsl2)? read = hasComputers ? ReadComputers(root.GetProperty(ComputersKey)) : ([], []);
+            if (read is not { Vms: var computers, Wsl2: var wsl2Computers }) return null;
+            reason = Reason.Attestation;
+            AttestationConfig? attestation = hasAttestation ? ReadAttestation(root.GetProperty(AttestationKey)) : null;
+            if (hasAttestation && attestation is null) return null;
             reason = Reason.PipeName;
             if (computers.Count > 0 && DesktopPipeName(pipeName).Length > MaxPipeNameLength) return null; // the desktop pipe's name must stay a plain pipe name too
 
             reason = "";
-            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers);
+            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers, wsl2Computers, attestation);
         }
     }
 
@@ -163,26 +174,45 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
         return distinct ? keys : null;
     }
 
-    // 0..8 entries, each exactly { computerId, vmId }: a contract id and a lowercase GUID. Every computerId and every vmId may appear once (two names for one VM, or
-    // one name for two VMs, would let a caller reach a VM through the wrong id).
-    private static IReadOnlyList<ComputerBinding>? ReadComputers(JsonElement element)
+    // 0..8 entries, each exactly { computerId, vmId } (a contract id and a lowercase GUID) or { computerId, kind: "wsl2" }. Every computerId and every vmId may appear once (two names for one VM, or
+    // one name for two VMs, would let a caller reach a VM through the wrong id; one id of both kinds would leave it unclear which rules apply).
+    private static (IReadOnlyList<ComputerBinding> Vms, IReadOnlyList<string> Wsl2)? ReadComputers(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() > MaxComputers) return null;
         List<ComputerBinding> computers = [];
+        List<string> wsl2 = [];
         foreach (JsonElement entry in element.EnumerateArray())
         {
             if (entry.ValueKind != JsonValueKind.Object) return null;
             HashSet<string> seen = new(StringComparer.Ordinal);
             foreach (JsonProperty property in entry.EnumerateObject())
                 if (!seen.Add(property.Name)) return null;
+            if (seen.SetEquals(Wsl2ComputerFields))
+            {
+                if (AsString(entry, "computerId") is not { } wsl2Id || !AuthorityKey.IsKeyId(wsl2Id) || AsString(entry, "kind") != Wsl2Kind) return null;
+                wsl2.Add(wsl2Id);
+                continue;
+            }
             if (!seen.SetEquals(ComputerFields)) return null;
             string? computerId = AsString(entry, "computerId"), vmId = AsString(entry, "vmId");
             if (computerId is null || vmId is null || !AuthorityKey.IsKeyId(computerId) || !ComputerBinding.IsVmId(vmId)) return null;
             computers.Add(new ComputerBinding(computerId, vmId));
         }
-        bool distinct = computers.Select(c => c.ComputerId).Distinct(StringComparer.Ordinal).Count() == computers.Count &&
+        string[] ids = [.. computers.Select(c => c.ComputerId), .. wsl2];
+        bool distinct = ids.Distinct(StringComparer.Ordinal).Count() == ids.Length &&
             computers.Select(c => c.VmId).Distinct(StringComparer.Ordinal).Count() == computers.Count;
-        return distinct ? computers : null;
+        return distinct ? (computers, wsl2) : null;
+    }
+
+    // Exactly { keyName, keyId }: a CNG key name (1..64 letters, digits, . _ -) and a contract id. Both are required when the key is present. The Broker opens the key by name at start and never creates it.
+    private static AttestationConfig? ReadAttestation(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object) return null;
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        foreach (JsonProperty property in element.EnumerateObject())
+            if (!seen.Add(property.Name)) return null;
+        if (!seen.SetEquals(AttestationFields)) return null;
+        return AsString(element, "keyName") is { } name && AsString(element, "keyId") is { } id && AttestationKeys.IsKeyName(name) && AuthorityKey.IsKeyId(id) ? new AttestationConfig(name, id) : null;
     }
 
     private static byte[]? DecodePublicKey(string text)

@@ -20,6 +20,7 @@ const vectorsV3Path = path.join(contractDir, 'test-vectors-v3.json');
 const schemaV3Path = path.join(contractDir, 'receipt-v3.schema.json');
 const attestationVectorsPath = path.join(contractDir, 'network-attestation-vectors.json');
 const taskStartVectorsPath = path.join(contractDir, 'task-start-attestation-vectors.json');
+const leaseVectorsPath = path.join(contractDir, 'wsl2-run-lease-vectors.json');
 
 function unavailableReason() {
   try {
@@ -36,7 +37,7 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy, NetworkAttestation and 
     const run = (args) => execFileSync('dotnet', args, { encoding: 'utf8', stdio: 'pipe', timeout: 180_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
     run(['build', harnessProject, '--configuration', 'Release', '--output', output, `--property:ContractDir=${contractDir}${path.sep}`,
       `--property:BaseIntermediateOutputPath=${intermediate}`, `--property:MSBuildProjectExtensionsPath=${intermediate}`, '--nologo']);
-    const result = JSON.parse(run([path.join(output, 'ReceiptV2Harness.dll'), vectorsPath, schemaPath, vectorsV3Path, schemaV3Path, attestationVectorsPath, taskStartVectorsPath]));
+    const result = JSON.parse(run([path.join(output, 'ReceiptV2Harness.dll'), vectorsPath, schemaPath, vectorsV3Path, schemaV3Path, attestationVectorsPath, taskStartVectorsPath, leaseVectorsPath]));
     const vectors = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
 
     assert.deepEqual(result.schemaMismatches, [], 'ReceiptV2.Fields equals receipt-v2.schema.json');
@@ -91,6 +92,12 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy, NetworkAttestation and 
     check(result.taskStartDigest, taskStart.digestVectors.map(({ name, expected }) => ({ name, expected })), 'task-start digest vector');
     assert.ok(taskStart.verifyVectors.cases.length >= 50 && result.taskStartVerify.length === taskStart.verifyVectors.cases.length);
     check(result.taskStartVerify, taskStart.verifyVectors.cases.map(({ name, result: expected }) => ({ name, expected })), 'task-start verify vector');
+
+    // WSL2 run lease (ADR-012): the same two kinds of vector, with its own ephemeral public key.
+    const lease = JSON.parse(fs.readFileSync(leaseVectorsPath, 'utf8'));
+    check(result.leaseDigest, lease.digestVectors.map(({ name, expected }) => ({ name, expected })), 'run lease digest vector');
+    assert.ok(lease.verifyVectors.cases.length >= 30 && result.leaseVerify.length === lease.verifyVectors.cases.length);
+    check(result.leaseVerify, lease.verifyVectors.cases.map(({ name, result: expected }) => ({ name, expected })), 'run lease verify vector');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

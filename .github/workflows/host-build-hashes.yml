@@ -41,6 +41,8 @@ jobs:
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9   # v4
         with:
           dotnet-version: 10.0.403   # HOST_BUILD_SDK in scripts/dotnet-build-env.mjs: change both together
+      - name: Keep only that SDK (the image ships newer ones, which dotnet would pick first)
+        run: node scripts/ci-keep-host-build-sdk.mjs
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
       - name: Build Windows Broker and pipe client (build only; never installed or started)

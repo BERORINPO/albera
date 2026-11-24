@@ -1213,7 +1213,9 @@ test('config checks refuse what the C# parsers refuse (extra or missing key, rel
   const expectations = {
     extraKey: 'config_keys', missingKey: 'config_keys', relativeDb: 'database', slashDb: 'database', groupSid: 'control_plane_sid', allServicesSid: 'control_plane_sid',
     generationZero: 'generation', rsaKey: 'authority_keys', badPipe: 'pipe_name', notJson: 'config_syntax', tooBig: 'config_too_large',
+    attestationExtra: 'attestation', attestationBadName: 'attestation',
   };
+  assert.deepEqual(r.brokerAttestationOk, [], 'the optional attestation key is accepted when it is exactly { keyName, keyId }');
   for (const [name, reason] of Object.entries(expectations)) assert.ok(r.brokerBad[name].includes(reason), `broker ${name} -> ${reason}, got ${JSON.stringify(r.brokerBad[name])}`);
   const authorityExpect = {
     sameSid: 'sids_not_distinct', approverVirtual: 'approver_sid', pipeRootLower: 'pipe_root', providerOther: 'signing_provider', audienceUpper: 'audience',

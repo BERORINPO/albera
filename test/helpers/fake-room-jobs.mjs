@@ -38,6 +38,8 @@ export function createFakeApprovals({ projectId = 'proj-alpha', change = (submit
       if (this.failNext) { const f = this.failNext; this.failNext = null; if (f instanceof Error) throw f; return f; }
       return answer({}, 'broker.operation', { action: 'synthetic.noop', projectId: 'proj-alpha', computerId: 'pc-01', args: {} });
     },
+    /** Request `index` ends with exactly this result. */
+    decide(index, result) { open[index].decide(result); },
     /** The person approved request `index`: the Broker claimed it. */
     approve(index = 0, ...rest) { open[index].decide({ ok: true, operationId: rest.length > 0 ? rest[0] : `op-${index + 1}` }); }, // an explicit undefined is passed on as is
     deny(index = 0, code = 'start_denied') { open[index].decide({ ok: false, code }); },

@@ -76,6 +76,7 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     private Proven? ProvenBy(PendingRequest request, object? attestation, string actionDigest)
     {
         if (attestation is null) return null;
+        if (request.Dto.Args.ContainsKey("isolation")) return Refused("isolation_needs_a_person"); // ADR-012, decision 4: a wsl2 task.start asks a person at every tier
         if (attestationKey is null) return Refused("no_key_pinned");
         if (request.Dto.Args.GetValueOrDefault("expectedGeneration") is not long generation || generation < 1) return Refused("generation_missing");
         if (request.Dto.Args.GetValueOrDefault("vmId") is not string vmId || !NetworkAttestation.IsVmId(vmId)) return Refused("vm_id_missing");

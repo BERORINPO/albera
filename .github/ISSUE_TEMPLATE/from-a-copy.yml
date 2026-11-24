@@ -1,0 +1,67 @@
+name: From a private copy or the explain map
+description: A problem or a wish from a private copy of ALBERA, its update pull request, or the explain map (tools/mochiba).
+title: "[copy] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This issue is public.** Describe the problem in general terms. **Do not paste your organization's code, file or folder names, box or feature names, paths, screenshots, or anything from a page the tools wrote about your code.**
+        Write "a box with about 30 lines shows small" rather than its name; "a role table with folder rows" rather than the table itself.
+        For a security problem, use private vulnerability reporting instead (see SECURITY.md).
+
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part
+      options:
+        - Explain map (tools/mochiba)
+        - Update pull request in a private copy (albera-updates workflow)
+        - Session board
+        - Runtime / jobs
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Something is wrong
+        - A wish (something missing)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ALBERA commit or version
+      description: In the copy, `git rev-parse --short HEAD`, or the version you run.
+      placeholder: a1b2c3d
+    validations:
+      required: false
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node.js version (`node --version`) and browser, where they matter.
+      placeholder: Windows 11, Node v22.13.0, Edge 131
+    validations:
+      required: false
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, or what you want
+      description: What you did, what you saw, and what you expected instead. Or what you want to do that you cannot yet.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: This issue contains no code, names, paths or screenshots from my organization.
+          required: true

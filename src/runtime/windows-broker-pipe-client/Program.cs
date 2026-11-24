@@ -21,12 +21,11 @@ using Microsoft.Win32.SafeHandles;
 internal static partial class Program
 {
     private const int ExitOk = 0, ExitBadInput = 64, ExitInternal = 70;
-    private const int MaxInputBytes = 8192, MaxRequestBytes = 4096, MaxAuthorityRequestBytes = 2048, MaxResponseBytes = 256, MaxAuthorityResponseBytes = 2048;
+    private const int MaxInputBytes = 8192, MaxRequestBytes = 4096, MaxAuthorityRequestBytes = 2048, MaxResponseBytes = 2048, MaxAuthorityResponseBytes = 2048;
     private static readonly string[] AuthorityCodes = ["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"];
     // Specific rights, never GENERIC_WRITE (its FILE_APPEND_DATA bit is FILE_CREATE_PIPE_INSTANCE on a pipe): the CP ACE is 0x00120083.
     private const uint ClientAccess = 0x1 /*FILE_READ_DATA*/ | 0x2 /*FILE_WRITE_DATA*/ | 0x80 /*FILE_READ_ATTRIBUTES*/ | 0x20000 /*READ_CONTROL*/ | 0x100000 /*SYNCHRONIZE*/;
-    private const uint OpenExisting = 3, SecuritySqosPresent = 0x00100000, SecurityIdentification = 0x00010000; // identification only: the server cannot act as us
-    private const uint ServiceRunning = 4;
+    private const uint ServiceRunning = 4, OpenExisting = 3, SecuritySqosPresent = 0x00100000, SecurityIdentification = 0x00010000; // identification only: the server cannot act as us
     private static readonly object Gate = new();
     private static volatile bool sent;
 
@@ -38,6 +37,7 @@ internal static partial class Program
         {
             if (args is ["desktop"]) { RunDesktop(); return ExitOk; } // DesktopSession.cs: one long-lived session instead of one request
             if (args is ["secret"]) return RunSecret(); // SecretMode.cs: DPAPI protect / unprotect, one frame in and one frame out
+            if (args is ["wsl-bridge"]) return RunBridgeRelay(); // BridgeRelay.cs: prove the server by its owner, then carry one request and its reply
             Run(ReadInput());
         }
         catch (Exception) { lock (Gate) Finish(Failure(sent ? "transport_error" : "server_identity_unavailable"), ExitInternal); }
@@ -46,10 +46,10 @@ internal static partial class Program
 
     // Open with SQOS identification, then verify the pipe server on the CONNECTED handle. Every refusal ends the process through Finish, so nothing is written to a server that failed a check.
     // Shared by the one-request modes and the desktop session (DesktopSession.cs): the same owner, PID, session and image checks.
-    private static NamedPipeClientStream OpenVerified(string pipeName, string? ownerSid, uint? pid, string? serviceName, string? imageSha256)
+    private static NamedPipeClientStream OpenVerified(string pipeName, string? ownerSid, uint? pid, string? serviceName, string? imageSha256, bool ownerOnly = false)
     {
         bool serviceMode = serviceName is not null;
-        uint expectedPid = serviceMode ? ServicePid(serviceName!) : pid!.Value;
+        uint expectedPid = ownerOnly ? (ownerSid is not null && pid is null && !serviceMode ? 0u : throw new InvalidOperationException()) : serviceMode ? ServicePid(serviceName!) : pid!.Value; // no PID is a choice a mode names, never what a missing value falls into: without ownerOnly a null PID throws
         SecurityIdentifier expectedOwner = ownerSid is not null ? new SecurityIdentifier(ownerSid)
             : (SecurityIdentifier)new NTAccount("NT SERVICE", serviceName!).Translate(typeof(SecurityIdentifier));
 
@@ -61,7 +61,7 @@ internal static partial class Program
         SecurityIdentifier? owner = pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
         if (owner is null || !owner.Equals(expectedOwner)) Finish(Failure("server_identity_mismatch"), ExitOk);
         if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint serverPid)) throw new Win32Exception();
-        if (serverPid != expectedPid) Finish(Failure("server_identity_mismatch"), ExitOk);
+        if (!ownerOnly && serverPid != expectedPid) Finish(Failure("server_identity_mismatch"), ExitOk);
         if (serviceMode && (!GetNamedPipeServerSessionId(pipe.SafePipeHandle, out uint session) || session != 0)) Finish(Failure("server_identity_mismatch"), ExitOk);
         if (imageSha256 is not null && !string.Equals(ImageSha256(serverPid), imageSha256, StringComparison.Ordinal)) Finish(Failure("server_identity_mismatch"), ExitOk);
         return pipe;
@@ -94,13 +94,13 @@ internal static partial class Program
     {
         try
         {
-            using JsonDocument document = JsonDocument.Parse(reply, new JsonDocumentOptions { MaxDepth = 2 });
+            using JsonDocument document = JsonDocument.Parse(reply, new JsonDocumentOptions { MaxDepth = 3 }); // object -> lease envelope -> lease body
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("ok", out JsonElement ok)) return Failure("invalid_response");
             if (ok.ValueKind == JsonValueKind.False && root.TryGetProperty("code", out JsonElement code) && code.ValueKind == JsonValueKind.String && code.GetString() == "denied") return Failure("denied");
             if (ok.ValueKind != JsonValueKind.True) return Failure("invalid_response");
-            if (Text(root, "state") is { } state && Text(root, "action") is { } action)
-                return $"{{\"ok\":true,\"state\":{JsonSerializer.Serialize(state)},\"action\":{JsonSerializer.Serialize(action)}{(root.TryGetProperty("replayed", out JsonElement replayed) && replayed.ValueKind == JsonValueKind.True ? ",\"replayed\":true" : "")}}}";
+            if (Text(root, "state") is { } state && Text(root, "action") is { } action && LeaseText(root) is { } leaseText) // LeaseRelay.cs: the run lease of a new wsl2 claim, passed on unchanged; a malformed one falls through to invalid_response
+                return $"{{\"ok\":true,\"state\":{JsonSerializer.Serialize(state)},\"action\":{JsonSerializer.Serialize(action)}{(root.TryGetProperty("replayed", out JsonElement replayed) && replayed.ValueKind == JsonValueKind.True ? ",\"replayed\":true" : "")}{leaseText}}}";
             if (Number(root, "brokerEpoch") is { } epoch && Number(root, "leaseGeneration") is { } generation && Text(root, "brokerChallenge") is { } challenge)
             {
                 // `leaseId` (a contract id) is required: the Broker always sends it (PR #92).

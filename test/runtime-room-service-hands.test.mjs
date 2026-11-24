@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createFakeControlPlaneSecretStore } from '../src/runtime/fake-control-plane-secret-store.mjs';
 import { SecretStoreError } from '../src/runtime/control-plane-secret-store.mjs';
+import { createFakeWsl2BridgeClient } from '../src/runtime/fake-wsl2-bridge-client.mjs';
 import { CREDENTIAL_NAME, createRoomServiceHands } from '../src/runtime/room-service-hands.mjs';
 
 // The hands of the room service (src/runtime/room-service-hands.mjs) with a Fake driver: what these prove is the order of the steps and the rules between them (the VM check first, a new empty
@@ -36,7 +37,7 @@ function fakeDrivers() {
   };
 }
 
-function setup({ targets, token = TOKEN, claude = CLAUDE, createDriver, ...rest } = {}) {
+function setup({ targets, token = TOKEN, claude = CLAUDE, createDriver, wsl2, ...rest } = {}) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-hands-')));
   roots.push(base);
   const runRoot = path.join(base, 'control-plane', 'claude-run');
@@ -52,11 +53,35 @@ function setup({ targets, token = TOKEN, claude = CLAUDE, createDriver, ...rest 
     secretStore: store, runRoot, claude, mcp: { command: process.execPath, entryPath: path.join(base, 'mcp-main.mjs'), broker: BROKER },
     claudeGuard: rest.claudeGuard ?? { check: async () => true },
     onEvent: (vm, event) => events.push([vm, event]), log: (line) => logs.push(line), createDriver: createDriver ?? ((options) => drivers.create(options)),
-    newRunId: () => `run-${String(++n).padStart(16, '0')}`,
+    newRunId: () => `run-${String(++n).padStart(16, '0')}`, ...(wsl2 === undefined ? {} : { wsl2 }),
   });
   return { base, runRoot, drivers, secretStore, loads, events, logs, hands, ready: token === null || rest.secretStore ? Promise.resolve() : secretStore.save(CREDENTIAL_NAME, token) };
 }
 const eventTypes = (world) => world.events.map(([vm, e]) => `${vm}:${e.type}`);
+
+// ---- ADR-012, decision 4: a wsl2 computer is approved with its target, and these hands never run for it ----
+
+test('a wsl2 computer must be approved with its own target, and a VM action never fits it or the other way round', async () => {
+  const OID = 'a'.repeat(40);
+  const wsl2 = new Map([['albera-computer-a', { computerId: 'computer-a', isolation: 'wsl2', repositoryId: 'repo-alpha' }]]);
+  const vm = new Map([['albera-computer-a', { computerId: 'computer-a', vmId: VM, expectedGeneration: 3 }]]);
+  const named = { isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: OID };
+  const cases = [
+    ['nothing named', wsl2, {}, 'vm_unknown'], ['no isolation', wsl2, { repositoryId: 'repo-alpha', baseOid: OID }, 'vm_unknown'], ['no repository', wsl2, { isolation: 'wsl2', baseOid: OID }, 'vm_unknown'], ['no commit', wsl2, { isolation: 'wsl2', repositoryId: 'repo-alpha' }, 'vm_unknown'],
+    ['another repository', wsl2, { ...named, repositoryId: 'repo-beta' }, 'vm_unknown'], ['a branch for a commit', wsl2, { ...named, baseOid: 'main' }, 'vm_unknown'], ['another isolation', wsl2, { ...named, isolation: 'vm' }, 'vm_unknown'], ['a VM beside it', wsl2, { ...named, vmId: VM, expectedGeneration: 3 }, 'vm_unknown'],
+    ['a wsl2 action on a VM', vm, { vmId: VM, expectedGeneration: 3, ...named }, 'vm_unknown'], ['only an isolation on a VM', vm, { vmId: VM, expectedGeneration: 3, isolation: 'wsl2' }, 'vm_unknown'],
+    ['only a repository on a VM', vm, { vmId: VM, expectedGeneration: 3, repositoryId: 'repo-alpha' }, 'vm_unknown'], ['only a commit on a VM', vm, { vmId: VM, expectedGeneration: 3, baseOid: OID }, 'vm_unknown'],
+    ['settings with an unknown isolation', new Map([['albera-computer-a', { computerId: 'computer-a', vmId: VM, expectedGeneration: 3, isolation: 'other' }]]), { vmId: VM, expectedGeneration: 3 }, 'vm_unknown'],
+    ['a wsl2 target with no repository in the settings', new Map([['albera-computer-a', { computerId: 'computer-a', isolation: 'wsl2' }]]), { isolation: 'wsl2', baseOid: OID }, 'vm_unknown'],
+    ['the right target, while the hands for it do not exist', wsl2, named, 'wsl2_hands_missing'],
+  ];
+  for (const [label, targets, patch, code] of cases) {
+    const w = setup({ targets });
+    await w.ready;
+    assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'open notepad', operationId: 'start-1', ...patch }), { ok: false, code }, label);
+    assert.deepEqual([w.loads, w.drivers.made, w.events, existsSync(w.runRoot)], [[], [], [], false], `${label}: nothing was read, made or started`);
+  }
+});
 
 // ---- acceptance 3: the VM is checked before anything is read, made or started ----
 
@@ -309,4 +334,60 @@ test('treeStopConfirmed === false keeps that computer busy until a person stops 
   assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'six', operationId: 'start-8' }), { ok: true });
   w.hands.stopAll();
   await w.hands.close();
+});
+
+// ---- ADR-012, phase 4: the hands around a WSL2 run ----
+
+const WSL2_OID = 'a'.repeat(40);
+const WSL2_TARGETS = new Map([['pc-wsl', { computerId: 'pc-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha' }]]);
+const WSL2_START = { computerId: 'pc-wsl', task: 'fix it', operationId: 'op-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: WSL2_OID, lease: { lease: { expiresAt: 4_000_000_000 } } };
+function wsl2World(over = {}) {
+  const fake = createFakeWsl2BridgeClient({ bundle: Buffer.from('junk') });
+  const verb = (name) => async (runId) => { fake.calls.push({ verb: name, runId }); };
+  const client = { ...fake, begin: verb('begin'), end: verb('end'), stop: verb('stop') };
+  const world = setup({ targets: WSL2_TARGETS, wsl2: {
+    client, guard: { check: async () => true }, quarantine: {}, resultsRoot: path.resolve(path.sep, 'albera-test', 'results'),
+    shell: { command: process.execPath, entryPath: path.resolve(path.sep, 'albera-test', 'shell.mjs'), bridge: { pipeName: 'p', serverSid: 'S-1-5-21-1-2-3-1001', helperPath: BROKER.helperPath, helperSha256: BROKER.helperSha256 } }, ...over,
+  } });
+  return { world, client };
+}
+
+test('a WSL2 run: the shell hands, the run around them, a result on the list, and the folder gone', async () => {
+  const { world, client } = wsl2World();
+  await world.ready;
+  assert.deepEqual(await Promise.race([world.hands.start(WSL2_START), settle(500).then(() => 'late')]), { ok: true });
+  const [made] = world.drivers.made;
+  assert.equal(made.options.hands.serverName, 'albera_shell');
+  assert.ok(made.options.mcpServer.args.includes('op-wsl'));
+  made.finish({ outcome: 'claimed_done', reason: 'done', claim: 'DONE', toolCalls: 2 });
+  await settle(60);
+  assert.deepEqual(client.calls.map((c) => c.verb), ['begin', 'bundle', 'end']);
+  assert.deepEqual(world.hands.results().map((r) => [r.ok, r.operationId, r.code, r.trust]), [[false, 'op-wsl', 'bundle_invalid', 'agent_reported']]);
+  assert.deepEqual(readdirSync(world.runRoot), []);
+  assert.equal(world.events.at(-1)[1].type, 'end');
+});
+
+test('a person\'s stop reaches the bridge as well as the driver', async () => {
+  const { world, client } = wsl2World();
+  await world.ready;
+  await world.hands.start(WSL2_START);
+  assert.equal(world.hands.stopAll(), 1);
+  await settle(60);
+  assert.deepEqual(world.drivers.made[0].stops, ['stopped_by_human']);
+  assert.ok(client.calls.some((c) => c.verb === 'stop'));
+  assert.ok(!client.calls.some((c) => c.verb === 'bundle'), 'nothing is collected from a stopped run');
+  assert.deepEqual(world.hands.results(), []);
+});
+
+test('with no lease a WSL2 start ends before any driver, and a VM computer still runs the desktop hands', async () => {
+  const { world, client } = wsl2World();
+  await world.ready;
+  const { lease, ...noLease } = WSL2_START;
+  assert.ok(lease);
+  assert.deepEqual(await world.hands.start(noLease), { ok: false, code: 'start_error' });
+  await settle(30);
+  assert.equal(world.drivers.made.length, 0);
+  assert.deepEqual(client.calls, []);
+  assert.equal(world.events.at(-1)[1].reason, 'wsl2_lease_unavailable');
+  assert.deepEqual(world.loads, [], 'the token is never opened for it');
 });

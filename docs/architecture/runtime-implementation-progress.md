@@ -1,6 +1,6 @@
 # Runtime Architecture Implementation Progress
 
-**Updated:** 2026-11-04 (newest entries are at the end of this file)
+**Updated:** 2026-11-06 (newest entries are at the end of this file)
 **Working branch:** one branch per item from `origin/main` (`albera-goal` skill). Until 2026-10-28 the work was stacked on `codex/runtime-architecture-alignment`.
 **Runtime source/test HEAD audited (2026-10-28):** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
@@ -11,12 +11,6 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 
 Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 
-### 漏れた API キーの差し替え
-- やること: 2026-11-03 に漏れた ALBERA 用の API キーを、Anthropic Console で無効にする。キーを使い続ける場合だけ、新しいキーを作る (サブスクで動かすなら作り直しは不要)
-- 所要: 約 3 分 (Yosuke の作業時間)
-- これで進むもの: 漏れたキーの後始末 (stage 1 を動かすのには不要)
-- 取り消し: できない (無効にしたキーは元に戻らない)
-
 ### サブスクでの最初のジョブ (stage 1 の残り)
 - 済み (2026-11-04): 移行、3 つのサービスの起動、トークンの保存、VM の起動。WebAuthn で承認する形 (#204〜#206) の merge
 - 止まっている理由: この PC の ALBERA は WebAuthn より前の版で、リモートデスクトップの中では承認の鍵 (Windows Hello) が使えない (2026-11-04 に測定)。新しい版へ入れ替える
@@ -25,12 +19,11 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: stage 1 の受入。サービスの身元で claude.exe が動く確認 (M4) と、本物の本人確認での承認 (M14)
 - 取り消し: 入れ替えは戻せない (アンインストールでトークンと両方の記録が消える。VM は残る)。ジョブは「全部止める」で止まり、承認しなければ何も起きない
 
-### 戻せる承認の採択 (AGM-1・AGM-2)
-- やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、次の 2 点を承認するか決める
-  - AGM-1: Broker の WmiGate の許可リストに、チェックポイント・巻き戻し・電源・読み取りの行を足す。installer が VM を ProductionOnly にすることも含む
-  - AGM-2: Broker 用の証明鍵を発行し、Authority に登録する
+### 戻せる承認の採択 (AGM-1)
+- 済み (2026-11-06): AGM-2 を株主が承認した。Broker 用の鍵の発行と Authority への登録で、同じ鍵で WSL2 の run lease も署名する。鍵が実際に作られるのは、Yosuke が管理者でインストーラーを実行するとき
+- やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、AGM-1 を承認するか決める。Broker の WmiGate の許可リストに、チェックポイント・巻き戻し・電源・読み取りの行を足す。installer が VM を ProductionOnly にすることも含む。WSL2 には不要
 - 所要: 約 15 分 (Yosuke の読む時間)
-- これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる
+- これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる。WSL2 版は AGM-1 を待たない
 - 取り消し: 採択は revert できる。鍵は uninstall で消える
 
 ### 作業フォルダの削除
@@ -38,6 +31,20 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - 所要: 約 1 分
 - これで進むもの: ディスクの片付けだけ
 - 取り消し: ごみ箱に入るので、戻せる
+
+### WSL2 版の判断 2 点 (ADR-012 の決定 2、4)
+- やること: 次の 2 点を決める。どちらも推奨どおりなら「推奨で」の一言でよい
+  - 決定 2: `.wslconfig` は変えない (推奨)。実イメージの G4 で、変えなくてもサンドボックスから `/dev/dxg` と `/mnt/wslg` が見えないと確認した
+  - 決定 4: 段階 5 で YOSUKE-NOTE にサービスを入れる (推奨)。管理者権限と `claude.exe` のネイティブ版が要る
+- 所要: 約 2 分 (Yosuke の読む時間)
+- これで進むもの: 段階 5 の最初のジョブ。段階 2〜4 は決定を待たずに進む
+- 取り消し: できる (決定 4 はアンインストールで戻る)
+
+### WSL2 版の測定で Ubuntu を止める許可
+- やること: seccomp なしの AF_VSOCK 対照 (G2) と、`wsl --shutdown` 後の起動時間 (G0) を実イメージで測ってよい時間を決める
+- 所要: 測定は約 5 分。その間 Ubuntu と Docker が止まる。止まったままなら `wsl --shutdown` で戻る
+- これで進むもの: 実トークン前の gate のうち、残りの 2 つ
+- 取り消し: 測定そのものは何も残さない
 
 ### ご意見の受付 1/2: GitHub App を作る
 - やること: (1) 項目入りの作成ページを開き、内容を確かめて「Create GitHub App」: https://github.com/settings/apps/new?name=ALBERA%20feedback%20intake&description=Files%20ALBERA%20in-app%20feedback%20into%20a%20private%20intake%20repository.&url=https%3A%2F%2Fgithub.com%2FBERORINPO%2Falbera&public=false&webhook_active=false&issues=write (2) できた App の画面で「Generate a private key」(.pem が保存される) (3)「Install App」→ BERORINPO →「Only select repositories」で albera-feedback だけを選んで Install (4) App ID (App の設定画面の上) と installation の番号 (Install 後の画面のアドレス末尾の数字) を控える
@@ -605,3 +612,33 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 - **Found on the way.** The CI runner's temp folder is an 8.3 short name, which Windows PowerShell 5.1's `GetFullPath` expands, so the host script refuses paths under it as not plain (test fixed in #206). The Authority lets a legacy Hello key keep a non-derived id and seeds its store with it, while the installer holds a store to the key-file rules; only the lab's `hello-lab-0001` is affected, since a real Hello enroll derives its id.
 - **Tests that touched the real Authority on this PC.** While phase 3 was written, a worker's integration test sent `keys list`, `list` and `deny <unknown id>` to the RUNNING AlberaApprovalAuthority of the owner's install (read-only or harmless: the id matched nothing). #202's guard (`sc.exe query` exit 0 or 5) now skips those tests when a real Authority is installed, and workers are told never to talk to it.
 - **Not verified yet.** A real WebAuthn assertion through the Authority (the lab has no authenticator), the update of the owner's PC to this build, the first job (M4, M14).
+
+## 2026-11-06 — WSL2 Phase 1: the image and albera-agent (ADR-012)
+
+- **Done.** `src/runtime/wsl2-guest/agent.c` (run, read, write, bundle over framed stdio), `build-image.sh` (pinned Ubuntu Base 24.04.5 plus git), `scripts/wsl2-gates.mjs`. Nothing is wired to a job and no real token was used.
+- **Measured.** Real image, real sandbox, throwaway distributions on YOSUKE-NOTE: 25 of 25. Table in ADR-012 "Phase 1 results". Zaku found the core limit could be lowered: reproduced, fixed in seccomp, measured again.
+- **Not verified.** G2 without seccomp and a cold start on this image (both stop the owner's distributions: card). Whether a job can reach `modprobe`. G1 and G7 (they need the Broker and the bridge). The agent's unit tests run only on Linux CI: on Windows they skip.
+- **Next.** Phase 2: action fields, the Broker's second kind of computer, the run lease.
+
+## 2026-11-06 — ADR-012 Phase 2, without the Broker's signature
+
+- **VERIFIED (`node --test` on Windows, Node 24; real Broker and Authority binaries, no real key):** the run lease contract in both twins against 55 digest and 41 signed vectors; the Broker's `kind: "wsl2"` computers and the wsl2 action form over the real claim pipe; a policy receipt or an attestation can never cover an action that names `isolation`; the gate, the job routes and the hands carry and check the target.
+- **BLOCKED on AGM-2:** the Broker signing a lease. ADR-012 said "its existing key", and the production Broker has none. The ADR is corrected and the AGM-1/2 card says so.
+- **Not verified:** a run under a lease (the bridge is Phase 3). Nothing here reaches a job: `room-service-config` does not read a wsl2 computer, and the hands refuse one.
+
+## 2026-11-06 — ADR-012 Phase 3: the bridge, albera_shell, the driver's tool set
+
+- **Bridge (PR 220):** `src/runtime/windows-wsl-bridge/`, the only caller of `wsl.exe`. Fake-host harness 85 of 85. `scripts/wsl2-bridge-gates.mjs` 34 of 34 on the real image and real `wsl.exe` in throwaway distributions (seam build, Control Plane as the owner, no real token, no real key). Ubuntu and docker-desktop stayed Stopped. A build without the seam has 0 errors.
+- **albera_shell (this branch):** MCP server, Node bridge client, helper relay mode, driver tool set as a parameter. Fake only: never connected to the real bridge pipe, to WSL or to real Claude Code.
+- **Review:** Zaku failed the bridge on two HIGH findings (pipe slots dying on a disconnect, the lease floor read only at start). Both are fixed; the re-review and the albera_shell review are PASS with notes.
+- **Not reachable:** the hands still refuse wsl2 (`wsl2_hands_missing`) and `room-service-config` does not read it, so nothing here reaches a job.
+- **Before Phase 4:** see "Before Phase 4" in ADR-012 (SEC-1 helper pin, SEC-2 owner-only proof). Phase 5 must limit reading the lease floor (MEDIUM-1).
+- **Test results:** local full runs fail the same nine job-guardian, helper-process and folder-guard tests, which CI does not. A 300 ms wait in the bridge rig failed once on a busy Windows runner and is now 3 s.
+- **After merge:** PR 220 and PR 221 are in `main` (`ed3f52b`). The revocation steps are in `docs/architecture/wsl2-lease-revocation-runbook.md`: a proposal, since the Broker cannot sign leases yet. Only its floor half has been observed on a machine.
+
+## 2026-11-06 — ADR-012 Phase 4: the path of a WSL2 job, up to the lease
+
+- **VERIFIED (machine, fake Control Plane, test key, no token):** `scripts/wsl2-bridge-gates.mjs` 38 of 38, including `status`, a job's commit through `bundle`, and that bundle through the real quarantine to a diff.
+- **VERIFIED (`node --test`, fakes, real git for the result path):** the hands around a run, every failure branch, the settings, the routes and the page's pure parts. Approver harness 130 of 130.
+- **BLOCKED on AGM-2:** the lease. Every job ends with `wsl2_lease_unavailable`.
+- **Not verified:** a job from end to end, a large bundle through the pipe, the page in a browser, SEC-2 (needs a second Windows account, moved to Phase 5). Details in ADR-012, "Phase 4 results".

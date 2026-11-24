@@ -62,7 +62,12 @@ internal sealed class ApprovalPrompt
     // ---- what is shown ------------------------------------------------------------------------------------------------------------------
 
     /// <summary>One or two Japanese sentences saying what the action does. Our own text: never taken from the request.</summary>
-    public string Summary => View is null ? "内容を読み取れない依頼です。" : Describe(View.Purpose, View.Action.Action);
+    public string Summary => View is null ? "内容を読み取れない依頼です。" : IsWsl2Start ? Wsl2StartSummary : Describe(View.Purpose, View.Action.Action);
+
+    /// <summary>ADR-012 decision 5: fixed text keyed on `isolation`, which is in the digest. Never taken from the request.</summary>
+    public const string Wsl2StartSummary = "WSL2 の中で、AI に下のタスクを実行させます (タスクの開始)。WSL2 は VM より弱い隔離です。Linux カーネルに不具合があると、ジョブがこの PC の上であなたとして動けてしまいます。";
+
+    private bool IsWsl2Start => View is { Purpose: "guest.command" } view && view.Action.Action == "task.start" && view.Action.Args.TryGetValue("isolation", out object? isolation) && isolation is "wsl2";
 
     /// <summary>The task text exactly as sent (task.start), or null.</summary>
     public IReadOnlyList<TextRun>? TaskRuns => View?.Action.Args.TryGetValue("task", out object? task) == true && task is string text ? Runs(text) : null;
@@ -75,7 +80,7 @@ internal sealed class ApprovalPrompt
             if (View is not { } view) return [];
             List<DisplayLine> lines =
             [
-                Line("VM", view.Action.ComputerId),
+                Line(IsWsl2Start ? "コンピューター" : "VM", view.Action.ComputerId),
                 Line("プロジェクト", view.Action.ProjectId),
                 Line("動作", $"{view.Purpose} / {view.Action.Action}"),
             ];
@@ -89,7 +94,7 @@ internal sealed class ApprovalPrompt
                     bool b => b ? "true" : "false",
                     _ => "(未対応の型)",
                 };
-                lines.Add(Line(name == "vmId" ? "VM ID" : name, shown));
+                lines.Add(Line(LabelOf(name), shown));
             }
             lines.Add(Line("操作 ID", view.OperationId));
             lines.Add(new DisplayLine("digest の再計算", [new TextRun(view.DigestMatches ? $"一致しました ({view.RecomputedDigest})" : $"一致しません: 表示内容から計算すると {view.RecomputedDigest} です", false)]));
@@ -224,6 +229,8 @@ internal sealed class ApprovalPrompt
             if (value is string text) yield return text;
         }
     }
+
+    private static string LabelOf(string name) => name switch { "vmId" => "VM ID", "isolation" => "隔離", "repositoryId" => "リポジトリ", "baseOid" => "元のコミット", _ => name };
 
     private static string Describe(string purpose, string action) => (purpose, action) switch
     {

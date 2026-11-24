@@ -88,6 +88,8 @@ const EXPECTED = {
     'room-service-config.mjs', 'room-service-approvals.mjs', 'room-service-hands.mjs', 'room-service-folder-guard.mjs', 'room-service-wiring.mjs',
     // Claude Code as the hands: a stdio MCP server over the desktop Broker client (adapter; args = pure flags, server = tools + budget, mcp/mcp-main = entry), the headless `claude -p` driver and its Fake (adapter pair; decision log 2026-11-03+claude-code-hands)
     'albera-desktop-mcp-args.mjs', 'albera-desktop-mcp-server.mjs', 'albera-desktop-mcp.mjs', 'albera-desktop-mcp-main.mjs', 'claude-code-driver.mjs', 'fake-claude-code.mjs', 'fake-albera-desktop-mcp-main.mjs',
+    // the same hands for a WSL2 computer (ADR-012): a stdio MCP server over the bridge client, the client (it starts the pipe client helper, rule 5b) and the pure wire, and the two Fakes
+    'albera-shell-mcp-args.mjs', 'albera-shell-mcp-server.mjs', 'albera-shell-mcp.mjs', 'albera-shell-mcp-main.mjs', 'fake-albera-shell-mcp-main.mjs', 'wsl2-bridge-client.mjs', 'wsl2-bridge-wire.mjs', 'fake-wsl2-bridge-client.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
     'integration-candidate.mjs',
     // host-side git quarantine for submissions (bundles only, bare repositories, hardened git; ADR-007 §2 / §4) and its test double
@@ -104,13 +106,15 @@ const EXPECTED = {
       'NetworkAttestation.cs',
       // the task-start attestation (network none + a Production checkpoint, step 4) and its C# twin
       'task-start-attestation.mjs', 'task-start-attestation-vectors.json', 'TaskStartAttestation.cs',
+      // the WSL2 run lease the Broker signs and the WSL bridge checks (ADR-012) and its C# twin
+      'wsl2-run-lease.mjs', 'wsl2-run-lease-vectors.json', 'Wsl2RunLease.cs',
       // match code (the 4 digits the room and the approver app both show, display aid); its C# twin is windows-approver/MatchCode.cs
       'match-code.mjs', 'match-code-vectors.json'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs',
       'settings.mjs', 'jobs.mjs', 'words-panels.mjs', 'panels.css',
       // feedback panel and its words; feedback-contract.mjs here is only the Node-side stand-in (the host serves src/runtime/feedback-contract.mjs at that URL)
-      'feedback.mjs', 'words-feedback.mjs', 'feedback-contract.mjs'].map((f) => `room-ui/${f}`)],
+      'feedback.mjs', 'words-feedback.mjs', 'feedback-contract.mjs', 'view-follow.mjs'].map((f) => `room-ui/${f}`)],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -213,6 +217,12 @@ check('5 read-only', [...adapters, ...entry], (line) =>
     ? 'write APIs are not allowed'
     : null,
 );
+// docs/architecture/no-vm-mode.md rule 3: the probe grants nothing, so only the command line may read it, to print it.
+check('5c host-capabilities only for showing', runtime, (line, file) => (
+  /(?:\bfrom\s+|\bimport\s*\(?\s*)['"][^'"]*host-capabilities/.test(line) && path.basename(file) !== 'entry.mjs'
+    ? 'only entry.mjs may import host-capabilities.mjs: what the probe says must not decide anything'
+    : null
+));
 check('5a no process execution in read-only layers', [...adapters, ...entry], (line) =>
   /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile)\s*\(/.test(line) ? 'process execution is restricted to src/runtime/' : null,
 );
@@ -261,7 +271,7 @@ const providerContracts = [
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
   'src/runtime/workspace.mjs',
-  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation', 'match-code'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
+  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation', 'wsl2-run-lease', 'match-code'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
   'src/runtime/fake-attestation-signer.mjs',
   // the desktop Broker client's shared checks and its Fake (the real client, windows-desktop-broker-client.mjs, starts the pipe client helper, so it is under rule 5b instead)
   'src/runtime/desktop-broker-client-contract.mjs',
@@ -269,6 +279,11 @@ const providerContracts = [
   // the desktop MCP server reaches only its injected Broker client (the driver and the Fake claude start processes, so they are under rule 5b instead)
   'src/runtime/albera-desktop-mcp-args.mjs',
   'src/runtime/albera-desktop-mcp-server.mjs',
+  // the same for the shell MCP server, the bridge's wire and the Fake bridge client (the real client starts the helper, so it is under rule 5b)
+  'src/runtime/albera-shell-mcp-args.mjs',
+  'src/runtime/albera-shell-mcp-server.mjs',
+  'src/runtime/wsl2-bridge-wire.mjs',
+  'src/runtime/fake-wsl2-bridge-client.mjs',
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
@@ -339,11 +354,11 @@ for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f)))
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
 // Program.cs and DesktopSession.cs stay small enough to review (line caps below), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
 const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
-const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'SecretMode.cs', 'packages.lock.json'];
+const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'SecretMode.cs', 'BridgeRelay.cs', 'packages.lock.json'];
 // Program.cs: 200 until the fence and inspect request kinds (receipt v2) were added; 220 until the Approval Authority submit request kind (`authority`) was added; 250 until the desktop session mode was added
 // (the session itself is DesktopSession.cs, capped separately; Program.cs only gained the shared OpenVerified and the mode switch).
-// SecretMode.cs (DPAPI protect / unprotect for the Control Plane's secret store, 124 lines) is capped at 160.
-const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200, 'SecretMode.cs': 160 };
+// SecretMode.cs (DPAPI protect / unprotect for the Control Plane's secret store, 124 lines) is capped at 160. BridgeRelay.cs (the verified relay to the WSL bridge, 80 lines) at 110.
+const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200, 'SecretMode.cs': 160, 'BridgeRelay.cs': 110 };
 for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
 for (const [file, max] of Object.entries(PIPE_CLIENT_MAX_LINES)) {
   const source = path.join(ROOT, pipeClientRoot, file);
@@ -525,6 +540,49 @@ try {
 for (const file of trackedBuildOutput) violations.push(`[12e tracked build output] ${file} is tracked inside a bin/ or obj/ folder, which the arch scan and the app tree skip`);
 results.push(`12e no tracked file under bin/ or obj/: ${trackedBuildOutput.length} found`);
 results.push(`12 Control Plane host is build-on-demand: ${cpHostSources.length + 2} source files, ${cpHostWired.length} wiring violations`);
+
+// 13. The WSL bridge (src/runtime/windows-wsl-bridge, ADR-012 "The WSL bridge", Proposed) is the ONLY program that starts wsl.exe (decision 3): a guest that got out through wsl.exe would hold the identity
+//     of whoever started it, and the Control Plane's identity opens the DPAPI token. So no Node module (runtime, app layers, UI) may name wsl.exe or the bridge project; the bridge is built on demand
+//     only, like the Broker (rule 8), and package.json may not wire it in. Inside the bridge: wsl.exe is named only in WslExeHost.cs, the argument lists are WslArgs.cs, `--shutdown` (which also stops the
+//     owner's Ubuntu and Docker) is written nowhere in code, it takes no package (BCL only), and it does not name the Broker or Authority projects (separately deployable).
+const WSL_BRIDGE_REF = /windows-wsl-bridge|Albera\.WslBridge|albera-wsl-bridge|build:wsl-bridge/i;
+check('13a WSL bridge is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  WSL_BRIDGE_REF.test(line) ? 'the WSL bridge must not be imported, spawned or named here (build-on-demand only)' : null,
+);
+check('13b no Node module starts wsl.exe (only the WSL bridge does)', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  /wsl\.exe|['"`]wsl['"`]/i.test(line) ? 'wsl.exe may be started only by the WSL bridge (ADR-012, decision 3)' : null,
+);
+const wslBridgeRoot = 'src/runtime/windows-wsl-bridge';
+const wslBridgeSources = ['Program.cs', 'Bridge.cs', 'BridgeBegin.cs', 'BridgeConfig.cs', 'PipeServer.cs', 'LocalPipe.cs', 'WslExeHost.cs', 'WslArgs.cs', 'IWslHost.cs', 'AgentLink.cs', 'OperationLedger.cs',
+  'GitRepositories.cs', 'PathGuard.cs', 'SidRules.cs', 'Reason.cs', 'Limits.cs', 'Wire.cs', 'Floor.cs', 'LeaseFloor.cs', 'ChildProcess.cs', 'TestSeam.cs'];
+for (const f of [...wslBridgeSources, 'Albera.WslBridge.csproj', 'packages.lock.json']) {
+  if (!fs.existsSync(path.join(ROOT, wslBridgeRoot, f))) violations.push(`[13c WSL bridge source] ${wslBridgeRoot}/${f} does not exist (false-safe)`);
+}
+const wslBridgeFiles = wslBridgeSources.map((f) => `${wslBridgeRoot}/${f}`).filter((f) => fs.existsSync(path.join(ROOT, f)));
+const codeOnly = (line) => line.replace(/\/\/[^\r\n]*/u, ''); // a comment may explain what is not done
+check('13d WSL bridge sources: wsl.exe only in WslExeHost.cs, no shutdown, no Broker or Authority project', wslBridgeFiles, (line, file) => {
+  const code = codeOnly(line);
+  if (/shutdown/i.test(code)) return '`wsl --shutdown` is a separate decision (ADR-012, decision 13) and is not built here';
+  if (/wsl\.exe/i.test(code) && !file.endsWith('WslExeHost.cs')) return 'wsl.exe is named only in WslExeHost.cs';
+  if (/ProcessStartInfo|Process\.Start\(/.test(code) && !/(?:WslExeHost|ChildProcess)\.cs$/.test(file)) return 'a child process is started only through ChildProcess.cs / WslExeHost.cs';
+  return /windows-broker|WindowsBroker|windows-approval-authority|Albera\.ApprovalAuthority/i.test(code) ? 'the bridge is separately deployable: no reference to the Broker or Authority project' : null;
+});
+const wslBridgeProject = fs.existsSync(path.join(ROOT, wslBridgeRoot, 'Albera.WslBridge.csproj')) ? fs.readFileSync(path.join(ROOT, wslBridgeRoot, 'Albera.WslBridge.csproj'), 'utf8') : '';
+if (/PackageReference|ProjectReference/.test(wslBridgeProject)) violations.push('[13e WSL bridge project] Albera.WslBridge.csproj takes a package or a project: BCL only (false-safe)');
+for (const f of wslBridgeFiles) {
+  const n = fs.readFileSync(path.join(ROOT, f), 'utf8').split('\n').length;
+  if (n > 800) violations.push(`[13e WSL bridge source] ${f} has ${n} lines (max 800)`);
+}
+const wslBridgePublish = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-wsl-bridge.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-wsl-bridge.mjs'), 'utf8') : '';
+if (!wslBridgePublish.includes('-p:AlberaWslBridgeTestSeams=false')) violations.push('[13e WSL bridge source] scripts/publish-windows-wsl-bridge.mjs does not pin the test seam off (false-safe)');
+const wslBridgeWired = [
+  ...Object.entries(pkg.bin ?? {}).filter(([, v]) => WSL_BRIDGE_REF.test(String(v))).map(([k]) => `bin.${k}`),
+  ...LIFECYCLE.filter((k) => WSL_BRIDGE_REF.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),
+  ...(pkg.files ?? []).filter((v) => WSL_BRIDGE_REF.test(String(v))).map((v) => `files[${v}]`),
+];
+for (const w of wslBridgeWired) violations.push(`[13f package.json] ${w} wires the WSL bridge into the package or an automatic step`);
+if (typeof pkg.scripts?.['build:wsl-bridge'] !== 'string') violations.push('[13f package.json] build:wsl-bridge script is missing (false-safe)');
+results.push(`13 WSL bridge is build-on-demand and the only wsl.exe caller: ${wslBridgeSources.length + 2} source files, ${wslBridgeWired.length} wiring violations`);
 
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);

@@ -1,0 +1,2542 @@
+{
+  "contract": "albera.wsl2-run-lease.vectors",
+  "version": 1,
+  "notes": [
+    "digestVectors: body is the lease body (v1, 11 keys). expected.ok = digest and the exact preimage bytes (UTF8 domain albera.wsl2-run-lease.v1, 0x00, enc(map)); otherwise code and field, the first failing field in the table order of validateWsl2RunLease.",
+    "The C# twin is Wsl2RunLease.cs. It reproduces every expected value here in the dotnet contract test.",
+    "verifyVectors: the public half of an EPHEMERAL ECDSA P-256 test key (publicKeySpki, base64 DER). The private key was discarded after signing; nothing secret is here.",
+    "Each case runs both steps: Authenticate, then RequireBinding. A verifier is stateless: a reused lease and the call count are the bridge's to refuse, so no vector covers them.",
+    "Bindings are reported in the order baseOid, computerId, operationId, repositoryId.",
+    "The last two cases pin domain separation: a genuine network attestation is malformed here, and a signature made over an attestation does not verify for a lease."
+  ],
+  "digestVectors": [
+    {
+      "name": "ttl-1800",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d0000000b530000000c616374696f6e44696765737453000000477368613235363a646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464645300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f80530000000f6c6561736547656e65726174696f6e49000000000000000753000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ttl-1",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793404801
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:7ecefa57d4fcea1a33d1ff71f64ad1d2732687ebd2dcb4eb73f25a176edc7e7a",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d0000000b530000000c616374696f6e44696765737453000000477368613235363a646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464645300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae52f81530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f80530000000f6c6561736547656e65726174696f6e49000000000000000753000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ttl-3600-is-the-limit",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793408400
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:6f1ebde0e2e6a33b9026e54844eac40a296b27484abf252f2cc18a9bbdaa6d5c",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d0000000b530000000c616374696f6e44696765737453000000477368613235363a646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464645300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53d90530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f80530000000f6c6561736547656e65726174696f6e49000000000000000753000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "sha256-oid",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:4345bef9313d2783f95868fcedeb249cc7b3b0ed7f08d8824e43b4ff2f508fe3",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d0000000b530000000c616374696f6e44696765737453000000477368613235363a646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464645300000007626173654f6964530000004063636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f80530000000f6c6561736547656e65726174696f6e49000000000000000753000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "one-call",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 1,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:5bd213d26d319a6e440b27da5f3892edeef0f2e217f5c48d6fcb100fda98bb07",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d0000000b530000000c616374696f6e44696765737453000000477368613235363a646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464645300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f80530000000f6c6561736547656e65726174696f6e49000000000000000753000000086d617843616c6c73490000000000000001530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ten-thousand-calls",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 10000,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:5af575ab7f819469cab2b2f18f7ed16423665aae1637b93c204caf23a35e756f",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d0000000b530000000c616374696f6e44696765737453000000477368613235363a646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464645300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f80530000000f6c6561736547656e65726174696f6e49000000000000000753000000086d617843616c6c73490000000000002710530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "longest-id",
+      "body": {
+        "v": 1,
+        "operationId": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:caa82c90ffa5b87eb61733ddd3a21569bac910a0f91a60889df65599cadec7d0",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d0000000b530000000c616374696f6e44696765737453000000477368613235363a646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464645300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f80530000000f6c6561736547656e65726174696f6e49000000000000000753000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e4964530000004061626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ttl-3601",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793408401
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-0",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793404800
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-negative",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793404799
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "version-0",
+      "body": {
+        "v": 0,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "version-2",
+      "body": {
+        "v": 2,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "version-string",
+      "body": {
+        "v": "1",
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "isolation-vm",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "vm",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "isolation"
+      }
+    },
+    {
+      "name": "isolation-upper",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "WSL2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "isolation"
+      }
+    },
+    {
+      "name": "isolation-number",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": 2,
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "isolation"
+      }
+    },
+    {
+      "name": "operation-empty",
+      "body": {
+        "v": 1,
+        "operationId": "",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "operation-space",
+      "body": {
+        "v": 1,
+        "operationId": "op 1",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "operation-65",
+      "body": {
+        "v": 1,
+        "operationId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "computer-slash",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc/1",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "computerId"
+      }
+    },
+    {
+      "name": "repository-backslash",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "C:\\repo",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "repositoryId"
+      }
+    },
+    {
+      "name": "repository-dot-start",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": ".hidden",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "repositoryId"
+      }
+    },
+    {
+      "name": "oid-short",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-41",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-upper",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-ref-name",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "refs/heads/main",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-newline",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "calls-0",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 0,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-10001",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 10001,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-negative",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": -1,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-fraction",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 1.5,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-string",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": "200",
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "issued-0",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 0,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "issuedAt"
+      }
+    },
+    {
+      "name": "issued-string",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": "1793404800",
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "issuedAt"
+      }
+    },
+    {
+      "name": "expires-unsafe",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 9007199254740992
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "action-digest-short",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:abc",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "actionDigest"
+      }
+    },
+    {
+      "name": "action-digest-upper",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "SHA256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "actionDigest"
+      }
+    },
+    {
+      "name": "action-digest-newline",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "actionDigest"
+      }
+    },
+    {
+      "name": "generation-0",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 0,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "leaseGeneration"
+      }
+    },
+    {
+      "name": "generation-string",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": "7",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "leaseGeneration"
+      }
+    },
+    {
+      "name": "operation-newline",
+      "body": {
+        "v": 1,
+        "operationId": "op\n",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "computer-newline",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc\n",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "computerId"
+      }
+    },
+    {
+      "name": "repository-newline",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo\n",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "repositoryId"
+      }
+    },
+    {
+      "name": "extra-key",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600,
+        "task": "x"
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-v",
+      "body": {
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-operationId",
+      "body": {
+        "v": 1,
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-actionDigest",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-leaseGeneration",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-computerId",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-isolation",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-repositoryId",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-baseOid",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-maxCalls",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-issuedAt",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-expiresAt",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "leaseGeneration": 7,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    }
+  ],
+  "verifyVectors": {
+    "keyId": "albera-test-broker-2026",
+    "publicKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEH0KcqqY4pXvSThU2R5dlSBndP8WVPqbSXBz2YP8CqIyeTMUoi1bCv7Ufit2BYmrGsgGVAwKZUgLl6IfRMWtN9Q==",
+    "cases": [
+      {
+        "name": "valid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-at-issue",
+        "now": 1793404800,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-last-second",
+        "now": 1793406599,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-clock-29-behind",
+        "now": 1793404771,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-clock-30-behind",
+        "now": 1793404770,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "not-yet-valid-31",
+        "now": 1793404769,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "not_yet_valid",
+          "field": "issuedAt"
+        }
+      },
+      {
+        "name": "expired-at-the-second",
+        "now": 1793406600,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "expired-later",
+        "now": 1793504799,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "wrong-base-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "baseOid"
+        }
+      },
+      {
+        "name": "wrong-computer",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-other",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "wrong-operation",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0002",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "operationId"
+        }
+      },
+      {
+        "name": "wrong-repository",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-beta"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "repositoryId"
+        }
+      },
+      {
+        "name": "all-wrong-names-base-oid-first",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "computerId": "x1",
+          "minLeaseGeneration": 7,
+          "operationId": "x2",
+          "repositoryId": "x3"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "baseOid"
+        }
+      },
+      {
+        "name": "generation-at-the-floor",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "generation-under-the-floor",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 8,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "generation",
+          "field": "leaseGeneration"
+        }
+      },
+      {
+        "name": "expected-bad-floor",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 0,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "minLeaseGeneration"
+        }
+      },
+      {
+        "name": "digest-newline",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218\n",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "key-id-newline",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026\n",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "keyId"
+        }
+      },
+      {
+        "name": "expected-bad-computer",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "a b",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "expected-bad-operation",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "operationId"
+        }
+      },
+      {
+        "name": "expected-bad-repository",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "/etc"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "repositoryId"
+        }
+      },
+      {
+        "name": "expected-bad-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "HEAD",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "baseOid"
+        }
+      },
+      {
+        "name": "signature-other-key",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "FtEcfUxrfWse1U_jEX99U8WfGnP3ntsWxfqqFrEK3-oLt6mj0PxcFd8xSvxKSZkBt1zr7dhIJqMSZcRpnnXn0g"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-unknown-key-id",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "someone-else",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "Xmn7Dz4UKv4APpI4m2kKQovL_sCK3g_i-WwsH7gkbZJe_rCZowW76CjBZns_MWbP8EWbADTu2LrCW_VPeJwn_g"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-flipped",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "AWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-empty",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": ""
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-padded",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg="
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-non-canonical",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxh"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-too-long",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "digest-wrong",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "digest-upper",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "SHA256:023ED92C41C01E0B1865EE52B4146C50D9AA081B020985F134662D2670E70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-base-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-calls",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 9999,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-expiry",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793408400
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "envelope-extra-key",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg",
+          "extra": 1
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "envelope-missing-digest",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "envelope-bad-key-id",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "a b",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "BWXkWWT6h9qi50xORSCwAL8S-n4TQ7gcXsJQm29MeyMM_BSE327eL1Aitybr6NmO9ANmTJZZJpfI605VlxDDxg"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "keyId"
+        }
+      },
+      {
+        "name": "resigned-ttl-limit",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:6f1ebde0e2e6a33b9026e54844eac40a296b27484abf252f2cc18a9bbdaa6d5c",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793408400
+          },
+          "signature": "sMZ2Z27c7ryKjCZR1iP8oXRl8d7CnbRIhY_dI-AFgIyk8SsZhDGdcclPtVgyzw5NOW4NM2aFrCziZNpm_65krg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "resigned-sha256-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:4345bef9313d2783f95868fcedeb249cc7b3b0ed7f08d8824e43b4ff2f508fe3",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "vEFSCkscArUmKw1Bm2efJB5bXIrz4nMUQTqL2vCPbfq3cgazN45SoKr0qBsFOQI3ni0M-SUEoxehmrJznSoUrA"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "network-attestation-is-malformed-here",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-wsl",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:2b9ca318033622d38b89f4d643a74d55303d218cce9175eb661cc3c2de427678",
+          "keyId": "albera-test-broker-2026",
+          "signature": "ELAQ5dcn0sZq8m38PWPReR4ozgu4se06JKNJJKb48OEYmBpUdmelM_YF9OxwPFWrvPlHx-GnPnGCnH-8GlKMnQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "cross-domain-signature",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "minLeaseGeneration": 7,
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:023ed92c41c01e0b1865ee52b4146c50d9aa081b020985f134662d2670e70218",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "actionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "leaseGeneration": 7,
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "h0m4OgiE3YxHZOLHwTmSSfh1-3rG1uAJ9ifaZzd0XMMyOsUCpawFHTYtSVsnFJZ6LKxPO5IZCp1yAVnbHJZiKA"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      }
+    ]
+  }
+}

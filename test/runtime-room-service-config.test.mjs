@@ -28,6 +28,8 @@ test('paths: everything comes from the data root alone', () => {
     secretsDir: path.join(root, 'secrets'),
     uiFile: path.join(root, 'ui', 'room.json'),
     runRoot: path.join(root, 'control-plane', 'claude-run'),
+    wsl2QuarantineRoot: path.join(root, 'control-plane', 'wsl2-quarantine'),
+    wsl2ResultsRoot: path.join(root, 'control-plane', 'wsl2-results'),
   });
   for (const bad of ['relative', '', undefined, null, 5, '\\\\server\\share\\x', `${root}${path.sep}..${path.sep}x`]) assert.equal(codeOf(() => roomServicePaths(bad)), 'room_service_config_data_root', String(bad));
 });
@@ -115,3 +117,8 @@ test('an executable outside the install folder is refused: a sibling, a parent, 
   if (process.platform === 'win32') assert.equal(parse(text(EXE.toUpperCase())).claude.executable, EXE.toUpperCase(), 'Windows compares paths without case');
 });
 function os_tmp() { return process.env.TEMP ?? process.env.TMPDIR ?? path.resolve(path.sep, 'tmp'); }
+
+test('a job always ends inside its lease: the longest run is shorter than the longest lease', async () => {
+  const { MAX_RUN_LEASE_TTL_SECONDS } = await import('../src/runtime/broker-contract/wsl2-run-lease.mjs');
+  assert.ok(CLAUDE_LIMITS.maxMinutes * 60 + 120 <= MAX_RUN_LEASE_TTL_SECONDS, 'or bundle answers lease_expired and every result is lost');
+});
