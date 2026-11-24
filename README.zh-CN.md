@@ -37,6 +37,10 @@ ALBERA 可以让 AI 在与你的文件隔离的 Hyper-V 虚拟机中工作，默
 
 没有 Hyper-V 的电脑可以使用会话看板和演示。任务绝不会改到电脑本机上运行：[docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md)（英文）。
 
+## 讲解地图（实验性，`tools/mochiba`）
+
+一个独立的命令行工具，用来讲解 AI 写出的代码。它根据仓库的角色表、import 和 git 历史，生成一个自包含的 HTML 页面：代码地图、按 PR 逐步讲解，以及通过点选地图上的方框来作答的练习模式。不使用 AI，只读取目标仓库，页面不向任何地方发送数据。只需 Node 22，无需安装依赖。页面目前为日语：[tools/mochiba/README.md](tools/mochiba/README.md)。
+
 ## 长期方向（尚未实现）
 
 以下是产品规划，不是本版本的功能：集成支持多个 AI CLI；由 Main AI 编排；无限画布和图视图；Knowledge Graph、Harness Graph 和 Comprehension Graph；Git worktree 与 PR 集成；以及开发策略的执行。常规的 `albera` 会话看板不会执行或控制 agent。

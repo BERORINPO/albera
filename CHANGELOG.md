@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Explain map** (`tools/mochiba`, experimental): a separate command-line tool that writes one self-contained HTML page from a repository's role tables, imports and git history: a map of the code, a walk through each pull request, and a practice mode. No AI, read-only, nothing sent. Japanese page for now.
+
 ### Changed
 
 - Rebrand Pigeonholes as ALBERA. The npm package and CLI command are now `albera`; runtime configuration uses `ALBERA_*`, with the previous `PIGEONHOLES_*` names kept as fallbacks during migration.
