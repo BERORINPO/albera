@@ -193,7 +193,8 @@ export function createClaudeMainAi({
 }
 
 /**
- * The start-up self-check. This child has NO tool and NO MCP server, and that is the only boundary (it reaches the same pipes as the Control Plane), so the `init` message must PROVE it:
+ * The start-up self-check. This child must have NO tool and NO MCP server (it reaches the same pipes as the Control Plane). `--tools ""` and the empty MCP configuration are what keep it so; this
+ * check only detects a child where they did not hold and stops it (it cannot undo a tool call already made), so the `init` message must PROVE it:
  * `tools` and `mcp_servers` both present, both empty. Anything else ends the run: a non-empty list is `unexpected_capability`, a list that is missing (or no `init` at all, or a reply before it)
  * is `capability_unverified`. The check of the hands (six tools and one MCP server, control-plane-service.md 6.3) is not reused: it would accept exactly what this child must not have.
  */
