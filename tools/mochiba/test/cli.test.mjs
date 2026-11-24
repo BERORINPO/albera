@@ -212,6 +212,17 @@ test('the written page carries none of the words in .private-words.txt (it is sh
   for (const w of words) assert.ok(!page.includes(w.toLowerCase()), `the page contains a private word (line ${words.indexOf(w) + 1} of .private-words.txt)`);
 });
 
+test('the one outside link is the fixed ALBERA issue form, opened by a click, carrying nothing from the map', () => {
+  const links = [...TEMPLATE.matchAll(/<a\b[^>]*>/g)].map((m) => m[0]);
+  const outside = links.filter((a) => /href="https?:/.test(a));
+  assert.equal(outside.length, 1);
+  assert.ok(outside[0].includes('href="https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml"'), outside[0]);
+  assert.match(outside[0], /target="_blank"/);
+  assert.match(outside[0], /rel="noopener noreferrer"/);
+  // The page scripts never point a link outside: only vscode:// for opening files.
+  assert.doesNotMatch(PAGE_SCRIPTS.map((p) => readFileSync(p, 'utf8')).join('\n'), /\.href\s*=|href:\s*`?https?:/);
+});
+
 test('template draws with DOM APIs and loads nothing from outside', () => {
   assert.ok(TEMPLATE.includes(DATA_SLOT));
   assert.doesNotMatch(TEMPLATE, /innerHTML|insertAdjacentHTML|document\.write/);

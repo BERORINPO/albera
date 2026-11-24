@@ -31,6 +31,20 @@ const FORBIDDEN_IN_TEMPLATE = [
   [/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon/, 'network call'],
 ];
 const ALLOW_MARK = /\/\/ arch-allow: \S/;
+// The one outside link the page may hold (owner's decision 2026-11-25, spec/architecture.md): a plain <a> to the fixed
+// ALBERA issue form, opened by a click. It loads nothing and carries nothing from the map. Exactly this attribute, only in
+// template.html, at most once; any other https link is still an "external resource".
+export const ALLOWED_LINK = 'href="https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml"';
+/** The text with the allowed link removed, and how many were removed (only <a> tags count). */
+export function withoutAllowedLink(text) {
+  let removed = 0;
+  const out = text.replace(/<a\b[^>]*>/g, (tag) => {
+    if (!tag.includes(ALLOWED_LINK)) return tag;
+    removed++;
+    return tag.split(ALLOWED_LINK).join('');
+  });
+  return { text: out, removed };
+}
 
 function roleTable() {
   const md = readFileSync(join(ROOT, 'spec', 'architecture.md'), 'utf8');
@@ -174,8 +188,28 @@ test('arch: the HTML template builds no HTML from strings and loads nothing from
   const templates = files.filter((f) => f.role === 'entry' && (f.abs.endsWith('.html') || /[\\/]page[\\/][^\\/]+\.js$/.test(f.abs)));
   assert.ok(templates.some((f) => f.abs.endsWith('.html')), 'no template found (false-safe)');
   assert.ok(templates.filter((f) => f.abs.endsWith('.js')).length >= 3, 'page scripts not scanned (false-safe)');
-  const hits = templates.flatMap((f) => FORBIDDEN_IN_TEMPLATE.filter(([re]) => re.test(f.text)).map(([, name]) => `${f.rel}: ${name}`));
+  let allowedLinks = 0;
+  const hits = templates.flatMap((f) => {
+    const { text, removed } = f.abs.endsWith('.html') ? withoutAllowedLink(f.text) : { text: f.text, removed: 0 };
+    allowedLinks += removed;
+    return FORBIDDEN_IN_TEMPLATE.filter(([re]) => re.test(text)).map(([, name]) => `${f.rel}: ${name}`);
+  });
+  console.log(`arch: allowed outside links in the page: ${allowedLinks} (at most 1)`);
+  assert.ok(allowedLinks <= 1, 'the allowed link appears more than once');
   assert.deepEqual(hits, []);
+});
+
+test('arch self-test: only the exact allowed link passes; any other https link is still caught', () => {
+  const rule = FORBIDDEN_IN_TEMPLATE.find(([, name]) => name === 'external resource')[0];
+  const ok = withoutAllowedLink(`<a class="x" ${ALLOWED_LINK} target="_blank">a</a>`);
+  assert.equal(ok.removed, 1);
+  assert.ok(!rule.test(ok.text));
+  for (const bad of [
+    '<a href="https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml&body=x">a</a>',
+    '<a href="https://example.com/">a</a>',
+    `<img src="https://e.invalid/x.png" data-x='${ALLOWED_LINK}'>`,
+    `<a ${ALLOWED_LINK}>a</a><link href="https://e.invalid/x.css">`,
+  ]) assert.ok(rule.test(withoutAllowedLink(bad).text), bad);
 });
 
 test('arch self-test: the forbidden-API scan fails on planted violations (false-safe guard)', () => {
