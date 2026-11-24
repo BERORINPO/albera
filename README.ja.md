@@ -41,6 +41,10 @@ Hyper-V がない PC では、セッション一覧とデモが使えます。�
 
 AI が書いた物を説明するための、別のコマンドラインの道具。repo の役割の表・import・git の履歴から、1 枚で完結する HTML を書き出す。中身はコードの地図、PR ごとの紙芝居、地図の箱を指して答える説明の練習。AI は使わず、対象の repo は読むだけで、画面はどこにも何も送らない。Node 22 だけで動く (入れる物なし): [tools/mochiba/README.md](tools/mochiba/README.md)。
 
+## 非公開の写し
+
+public な repo の fork は public になる。コードを外に出さずに ALBERA を使うときは、履歴ごと非公開の写しを作る。週 1 回の workflow が、ALBERA で変わった所 (CHANGELOG の新しい行と commit) をまとめた pull request を 1 つ開くので、人が読んで merge する: [docs/private-copy.md](docs/private-copy.md)。
+
 ## Runtimeプレビュー (実験的)
 
 `albera-runtime` は `albera` の読み取り専用サーバーとは別プロセスです。npm公開前のこのブランチでは次のように起動します:
