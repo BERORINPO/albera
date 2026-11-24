@@ -78,6 +78,10 @@ Read workflow changes before merging them: they run in your copy with your copy'
 
 ## Telling ALBERA about a problem
 
-Issues in BERORINPO/albera are **public**. Use the Bug report form there, and describe the problem in general terms:
-do not paste your organization's code, names, paths, screenshots or anything from a page the tools wrote about your
-code.
+Open an issue in BERORINPO/albera with the form **From a private copy or the explain map**
+(<https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml>). The explain map page and every update
+pull request link to it.
+
+Issues there are **public**: anyone can read them. Describe the problem in general terms, and do not paste your
+organization's code, file or feature names, paths, screenshots, or anything from a page the tools wrote about your code.
+The form asks you to confirm that before it sends.

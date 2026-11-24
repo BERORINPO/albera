@@ -24,6 +24,8 @@ export const SYNC_DEFAULTS = Object.freeze({
   base: 'main',
   branch: 'albera-update',
 });
+/** The public issue form for copies (.github/ISSUE_TEMPLATE/from-a-copy.yml). */
+export const ISSUE_FORM = 'https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml';
 const MAX_COMMITS = 30;          // listed in the body; the rest are counted
 const MAX_CHANGELOG_LINES = 60;
 const MAX_LINE = 300;            // one listed line, in characters
@@ -78,7 +80,9 @@ export function syncPullRequest({ upstream, ref, tip, commits, changelog, workfl
   }
   parts.push('', '---',
     'Opened by `.github/workflows/albera-updates.yml` (`scripts/upstream-sync.mjs`). It runs once a week; disable that workflow to stop it. '
-    + 'How a copy is set up: `docs/private-copy.md`.');
+    + 'How a copy is set up: `docs/private-copy.md`.',
+    '',
+    `A problem or a wish for ALBERA? ${ISSUE_FORM} (the issue is public: write it without this organization's code, names or screenshots).`);
   return { title: `ALBERA update: ${n} new ${plural} (${short})`, body: parts.join('\n') };
 }
 

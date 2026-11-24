@@ -2,10 +2,10 @@
 // and a fake `gh` that records what it was asked. Nothing leaves the machine.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { changelogAdditions, fenced, runCommand, syncPullRequest, syncSettings, upstreamSync } from '../scripts/upstream-sync.mjs';
+import { changelogAdditions, fenced, ISSUE_FORM, runCommand, syncPullRequest, syncSettings, upstreamSync } from '../scripts/upstream-sync.mjs';
 
 const ID = ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main'];
 const git = (cwd, ...args) => {
@@ -80,6 +80,7 @@ test('upstream-sync: new upstream commits -> pushes albera-update and opens one 
   assert.match(body, /fix: a/);
   assert.match(body, /feat: explain map/);
   assert.doesNotMatch(body, /Workflow files changed/);
+  assert.ok(body.includes('https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml'), 'the body links the issue form');
 });
 
 test('upstream-sync: an open update pull request is refreshed, not opened twice; the branch moves forward', (t) => {
@@ -167,6 +168,13 @@ test('syncPullRequest: upstream text cannot break out of its fenced block, menti
   assert.match(commitsBlock, /^`{5}text$/m, 'the commits fence is longer than the 4 backticks in a subject');
   assert.ok(body.indexOf('@owner') > body.indexOf('`````text'), 'the mention sits inside a fence');
   assert.equal(fenced(['x'.repeat(400)]).split('\n')[1].length, 300);
+});
+
+test('the issue form the body links to exists and asks for the privacy confirmation', () => {
+  const form = readFileSync(new URL('../.github/ISSUE_TEMPLATE/from-a-copy.yml', import.meta.url), 'utf8');
+  assert.ok(ISSUE_FORM.endsWith('template=from-a-copy.yml'));
+  assert.match(form, /This issue is public/);
+  assert.match(form, /id: privacy[\s\S]*required: true/);
 });
 
 test('changelogAdditions keeps added lines only, without runs of blank lines', () => {

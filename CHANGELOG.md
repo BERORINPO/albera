@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Private copies**: `.github/workflows/albera-updates.yml` and `scripts/upstream-sync.mjs`. In a private copy of ALBERA (made with its history), a weekly job opens or refreshes one pull request `albera-update` with the new CHANGELOG lines and commits; a person merges it. It never runs in BERORINPO/albera. How to set one up: `docs/private-copy.md`.
+- **Private copies**: `.github/workflows/albera-updates.yml` and `scripts/upstream-sync.mjs`. In a private copy of ALBERA (made with its history), a weekly job opens or refreshes one pull request `albera-update` with the new CHANGELOG lines and commits; a person merges it. It never runs in BERORINPO/albera. How to set one up: `docs/private-copy.md`. Problems and wishes from a copy go to a new public issue form, `.github/ISSUE_TEMPLATE/from-a-copy.yml`, which the update pull request links to.
 
 ### Changed
 
