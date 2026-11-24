@@ -1,0 +1,40 @@
+name: ALBERA updates (for private copies)
+
+# For a private copy of ALBERA (docs/private-copy.md). Once a week it opens, or refreshes, ONE pull request `albera-update`
+# that brings in what changed in the public ALBERA, with the new CHANGELOG lines and the commits in its body. The pull
+# request is the notice: everyone watching the copy hears about it. Merging it is a person's choice; nothing merges itself.
+# It never runs in BERORINPO/albera itself (the job's `if:`), so here it shows as skipped.
+#
+# Permissions are the job's only: contents write (to push the albera-update branch) and pull-requests write (to open or
+# edit that one pull request). It reads nothing else of the copy and sends nothing out; the only fetch is from upstream.
+# GitHub's own token may not push changes to .github/workflows/: when upstream changes those, add a repository secret
+# ALBERA_SYNC_TOKEN (a token that may write workflows) or merge by hand. The script says which.
+# Actions are pinned to a commit SHA (the tag is in the comment), like the rest of this repository's workflows.
+on:
+  schedule:
+    - cron: '17 3 * * 1'   # Mondays 03:17 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  update:
+    name: Open or refresh the ALBERA update pull request
+    if: github.repository != 'BERORINPO/albera'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.ALBERA_SYNC_TOKEN || github.token }}
+      - name: Compare with ALBERA and open or refresh the pull request
+        run: node scripts/upstream-sync.mjs
+        env:
+          GH_TOKEN: ${{ secrets.ALBERA_SYNC_TOKEN || github.token }}
+          ALBERA_UPSTREAM: ${{ vars.ALBERA_UPSTREAM }}
+          ALBERA_UPSTREAM_REF: ${{ vars.ALBERA_UPSTREAM_REF }}
+          BASE_BRANCH: ${{ vars.ALBERA_BASE_BRANCH }}   # empty: the copy's default branch

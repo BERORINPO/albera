@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Private copies**: `.github/workflows/albera-updates.yml` and `scripts/upstream-sync.mjs`. In a private copy of ALBERA (made with its history), a weekly job opens or refreshes one pull request `albera-update` with the new CHANGELOG lines and commits; a person merges it. It never runs in BERORINPO/albera. How to set one up: `docs/private-copy.md`.
+
 ### Changed
 
 - Rebrand Pigeonholes as ALBERA. The npm package and CLI command are now `albera`; runtime configuration uses `ALBERA_*`, with the previous `PIGEONHOLES_*` names kept as fallbacks during migration.
