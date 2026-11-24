@@ -7,9 +7,11 @@ name: ALBERA updates (for private copies)
 #
 # Permissions are the job's only: contents write (to push the albera-update branch) and pull-requests write (to open or
 # edit that one pull request). It reads nothing else of the copy and sends nothing out; the only fetch is from upstream.
-# GitHub's own token may not push changes to .github/workflows/: when upstream changes those, add a repository secret
-# ALBERA_SYNC_TOKEN (a token that may write workflows) or merge by hand. The script says which.
-# Actions are pinned to a commit SHA (the tag is in the comment), like the rest of this repository's workflows.
+# It never force-pushes: a person's commits on albera-update (a conflict resolution) are kept and the newer ALBERA is merged
+# on top. GitHub's own token may not push changes to .github/workflows/, and what it does starts no other workflow, so
+# checks on the pull request start when a person closes and reopens it after reading it (docs/private-copy.md says why,
+# and what the optional ALBERA_SYNC_TOKEN changes).
+# The action is pinned to a commit SHA (the tag is in the comment).
 on:
   schedule:
     - cron: '17 3 * * 1'   # Mondays 03:17 UTC

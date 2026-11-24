@@ -120,6 +120,100 @@ test("upstream-sync: without BASE_BRANCH the copy's default branch is asked from
   assert.equal(arg(gh.calls.find((a) => a[1] === 'create'), '--base'), 'main');
 });
 
+/** Like the workflow's checkout (fetch-depth 0): every branch of the copy's remote is known locally. */
+const refetch = (w) => git(w.copy, 'fetch', '-q', 'origin', '+refs/heads/*:refs/remotes/origin/*');
+const gitAtLeast = (major, minor) => { const [, a, b] = runCommand('git', ['--version']).stdout.match(/(\d+)\.(\d+)/) || []; return Number(a) > major || (Number(a) === major && Number(b) >= minor); };
+
+test("upstream-sync: a person's commit on albera-update (a conflict resolution) is kept; the new ALBERA is merged on top", (t) => {
+  const w = world(t);
+  commit(w.upstream, 'shared.txt', 'upstream 1\n', 'one');
+  upstreamSync({ cwd: w.copy, env: envFor(w), run: fakeGh().run });
+  refetch(w);
+  // A person fixes something on the update branch.
+  const work = path.join(w.root, 'person');
+  git(w.root, 'clone', '-q', '--branch', 'albera-update', w.origin, work);
+  const mine = commit(work, 'resolved.txt', 'resolved by a person\n', 'resolve conflict');
+  git(work, 'push', '-q', 'origin', 'albera-update');
+  const tip = commit(w.upstream, 'other.txt', 'upstream 2\n', 'two');
+  refetch(w);
+  const r = upstreamSync({ cwd: w.copy, env: envFor(w), run: fakeGh([7]).run });
+  assert.equal(r.status, 'updated', r.message);
+  assert.equal(r.branch, 'merged');
+  const head = git(w.origin, 'rev-parse', 'refs/heads/albera-update');
+  assert.equal(runCommand('git', ['merge-base', '--is-ancestor', mine, head], { cwd: w.origin }).code, 0, "the person's commit is still there");
+  assert.equal(runCommand('git', ['merge-base', '--is-ancestor', tip, head], { cwd: w.origin }).code, 0, 'the new upstream tip is in');
+});
+
+test("upstream-sync: when the new ALBERA conflicts with a person's commit on albera-update, nothing is pushed", (t) => {
+  const w = world(t);
+  commit(w.upstream, 'shared.txt', 'upstream 1\n', 'one');
+  upstreamSync({ cwd: w.copy, env: envFor(w), run: fakeGh().run });
+  const work = path.join(w.root, 'person');
+  git(w.root, 'clone', '-q', '--branch', 'albera-update', w.origin, work);
+  const mine = commit(work, 'shared.txt', 'a person changed this line\n', 'person edits shared');
+  git(work, 'push', '-q', 'origin', 'albera-update');
+  commit(w.upstream, 'shared.txt', 'upstream changed it too\n', 'upstream edits shared');
+  refetch(w);
+  const gh = fakeGh([7]);
+  const r = upstreamSync({ cwd: w.copy, env: envFor(w), run: gh.run });
+  assert.equal(r.status, 'branch_has_conflicts', r.message);
+  assert.equal(r.exitCode, 1);
+  assert.equal(git(w.origin, 'rev-parse', 'refs/heads/albera-update'), mine, 'the branch is left as it was');
+  assert.ok(!gh.calls.some((a) => a[1] === 'edit' || a[1] === 'create'));
+});
+
+test('upstream-sync: no new ALBERA commit but an open pull request -> the branch is not touched, the body is refreshed', (t) => {
+  const w = world(t);
+  commit(w.upstream, 'a.txt', '1\n', 'one');
+  upstreamSync({ cwd: w.copy, env: envFor(w), run: fakeGh().run });
+  refetch(w);
+  const before = git(w.origin, 'rev-parse', 'refs/heads/albera-update');
+  const gh = fakeGh([7]);
+  const r = upstreamSync({ cwd: w.copy, env: envFor(w), run: gh.run });
+  assert.equal(r.status, 'updated', r.message);
+  assert.equal(r.branch, 'already');
+  assert.equal(git(w.origin, 'rev-parse', 'refs/heads/albera-update'), before);
+});
+
+test('upstream-sync: only a pull request from this repository counts as the update pull request (not a fork with the same branch name)', (t) => {
+  const w = world(t);
+  commit(w.upstream, 'a.txt', '1\n', 'one');
+  const gh = fakeGh();
+  upstreamSync({ cwd: w.copy, env: envFor(w), run: gh.run });
+  const list = gh.calls.find((a) => a[1] === 'list');
+  assert.match(list[list.indexOf('--json') + 1], /isCrossRepository/);
+  assert.match(list[list.indexOf('--jq') + 1], /select\(\.isCrossRepository \| not\)/);
+});
+
+test('upstream-sync: after a squash merge of the update, the next run finds the changes already in and opens nothing', { skip: !gitAtLeast(2, 38) && 'git older than 2.38 (no merge-tree --write-tree)' }, (t) => {
+  const w = world(t);
+  commit(w.upstream, 'b.txt', 'b\n', 'feat: b');
+  commit(w.upstream, 'c.txt', 'c\n', 'feat: c');
+  upstreamSync({ cwd: w.copy, env: envFor(w), run: fakeGh().run });
+  // The copy squash-merges the update: one new commit with the same files, outside ALBERA's history.
+  writeFileSync(path.join(w.copy, 'b.txt'), 'b\n');
+  writeFileSync(path.join(w.copy, 'c.txt'), 'c\n');
+  git(w.copy, 'add', '-A');
+  git(w.copy, 'commit', '-q', '-m', 'ALBERA update (squash)');
+  git(w.copy, 'push', '-q', 'origin', 'main');
+  refetch(w);
+  const gh = fakeGh();
+  const r = upstreamSync({ cwd: w.copy, env: envFor(w), run: gh.run });
+  assert.equal(r.status, 'up_to_date', r.message);
+  assert.match(r.message, /squash or rebase/);
+  assert.deepEqual(gh.calls, []);
+});
+
+test('upstream-sync: the body says to merge with a merge commit and how checks start', (t) => {
+  const w = world(t);
+  commit(w.upstream, 'a.txt', '1\n', 'one');
+  const gh = fakeGh();
+  upstreamSync({ cwd: w.copy, env: envFor(w), run: gh.run });
+  const body = arg(gh.calls.find((a) => a[1] === 'create'), '--body');
+  assert.match(body, /Create a merge commit/);
+  assert.match(body, /close and reopen it to start them/);
+});
+
 test('upstream-sync: changed workflow files are named in the body', (t) => {
   const w = world(t);
   commit(w.upstream, '.github/workflows/test.yml', 'name: x\n', 'ci: x');

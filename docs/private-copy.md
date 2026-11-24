@@ -15,23 +15,27 @@ work is done by [`scripts/upstream-sync.mjs`](../scripts/upstream-sync.mjs). It 
 
 ## Make the copy
 
-Keep the history: the weekly comparison needs it. In an empty **private** repository you created (no README, no
-license), run once, from any folder:
+Keep the history: the weekly comparison needs it. Create an empty **private** repository (no README, no license),
+then run once, from any folder:
 
 ```
 git clone --bare https://github.com/BERORINPO/albera.git
 cd albera.git
-git push --mirror https://github.com/<your-org>/<your-copy>.git
+git push https://github.com/<your-org>/<your-copy>.git main
 cd ..
 ```
 
-Then delete the `albera.git` folder and clone your copy as usual. (A copy made by uploading files, or by
-"import" without history, shares no history with ALBERA: the workflow will say so and stop.)
+This pushes ALBERA's `main` only, not its other branches. Check that `main` is the copy's default branch
+(Settings > General > Default branch). Then delete the `albera.git` folder and clone your copy as usual.
+
+A copy made by uploading files, or by an import without history, shares no history with ALBERA: the workflow says so
+and stops.
 
 ## Turn the updates on
 
-1. In the copy: **Settings > Actions > General**: allow Actions to run, and turn on
-   **Allow GitHub Actions to create and approve pull requests**.
+1. In the copy, **Settings > Actions > General**: allow Actions to run, and turn on
+   **Allow GitHub Actions to create and approve pull requests**. In an organization the switch may be greyed out: an
+   organization owner first allows it in the organization's own **Settings > Actions > General**.
 2. **Actions > ALBERA updates (for private copies) > Run workflow** once, to see it work. After that it runs every
    Monday at 03:17 UTC.
 
@@ -39,39 +43,66 @@ Optional settings (Settings > Secrets and variables > Actions):
 
 | Name | Kind | Use |
 |---|---|---|
-| `ALBERA_SYNC_TOKEN` | secret | A token for this copy only that may write contents, pull requests **and workflows**. Needed only when ALBERA changes files under `.github/workflows/`: GitHub's own workflow token may not push those. |
 | `ALBERA_UPSTREAM_REF` | variable | The ALBERA branch to follow. Default `main`. |
 | `ALBERA_BASE_BRANCH` | variable | The copy's branch the pull request goes into. Default: the copy's default branch. |
 | `ALBERA_UPSTREAM` | variable | Where ALBERA is fetched from. Default `https://github.com/BERORINPO/albera.git`. |
+| `ALBERA_SYNC_TOKEN` | secret | Not recommended; read "Checks on the update pull request" first. A token for this copy only that may write contents, pull requests and workflows. With it, the workflow can also push changed workflow files, and checks start on the pull request by themselves. |
 
 To stop the updates, disable the workflow (Actions > the workflow > Disable workflow).
+
+## Merge the update with a merge commit
+
+Merge the update pull request with **Create a merge commit**, not squash or rebase. A merge commit keeps the copy's
+history joined to ALBERA's, so the next update lists only what is new. (After a squash or rebase merge the workflow
+still sees that the changes are in and does not open the same pull request again, but the next update's commit list
+starts from the older point.)
+
+## Checks on the update pull request
+
+Checks run ALBERA's new code, and any workflow it changed, inside your copy with your copy's secrets. So a person
+reads the pull request first and starts them second:
+
+- With GitHub's own workflow token (the default), GitHub does not start other workflows from what the token did, so
+  **the checks do not start by themselves**. After reading the changes, close the pull request and reopen it: that
+  starts them, as you.
+- With `ALBERA_SYNC_TOKEN`, the checks start as soon as the pull request opens or is refreshed, before anyone has read
+  it. Use it only if you accept that.
 
 ## Keep your own changes easy to merge
 
 The update pull request merges ALBERA's changes into your branch, next to your own commits. It merges cleanly as long
-as you do not edit the same lines. Put your own settings outside the files ALBERA ships where you can: for example,
-the explain map tool (`tools/mochiba`) takes its role tables from a file you pass with `--arch`, so nothing in the
-tool's folder has to change.
+as you do not edit the same lines. Put your own settings outside the files ALBERA ships where you can: for example, the
+explain map tool (`tools/mochiba`) takes its role tables from a file you pass with `--arch`, so nothing in the tool's
+folder has to change.
 
 If GitHub shows a conflict, resolve it in the pull request (or locally on the `albera-update` branch) like any other.
+The workflow keeps what you commit there: next week it merges the newer ALBERA on top of your commits, and if that
+conflicts too, it changes nothing and says so.
 
 ## When the update cannot be pushed
 
-When ALBERA changes files under `.github/workflows/`, GitHub refuses to let the workflow's own token push them, and the
-job ends with a message that says so. Either add `ALBERA_SYNC_TOKEN` (see above), or let a person who may change
-workflows push the branch once, then run the workflow again so it opens the pull request:
+Two cases end the job with a message:
+
+- **ALBERA changed files under `.github/workflows/`.** GitHub does not let the workflow's own token push those. A
+  person who may change workflows reads them, then pushes the branch once and runs the workflow again, which opens the
+  pull request.
+- **Your commits on `albera-update` conflict with the newer ALBERA.** Merge the open update pull request first, or
+  merge the newer ALBERA into the branch by hand.
+
+Both by hand, in a clone of the copy (use your `ALBERA_UPSTREAM` and `ALBERA_UPSTREAM_REF` if you set them):
 
 ```
 git fetch https://github.com/BERORINPO/albera.git main
-git push origin FETCH_HEAD:refs/heads/albera-update
+git switch albera-update        # skip if the branch does not exist yet: then push FETCH_HEAD directly
+git merge FETCH_HEAD
+git push origin HEAD:refs/heads/albera-update
 ```
-
-Read workflow changes before merging them: they run in your copy with your copy's permissions.
 
 ## What the workflow reads and sends
 
 - It fetches the public ALBERA branch. That is its only connection outside your copy.
-- In your copy it pushes one branch, `albera-update` (it writes no other branch), and opens or edits one pull request.
+- In your copy it writes one branch, `albera-update`, and never by force: it creates it, moves it forward, or merges
+  onto the commits a person added there. It opens or edits one pull request, from that branch of this repository.
 - The pull request body holds only ALBERA's own commit subjects and CHANGELOG lines, inside fenced blocks (so they
   cannot mention people or show images in your copy). Nothing about your copy (its code, branches, issues or pull
   requests) is read for the body or sent anywhere.
