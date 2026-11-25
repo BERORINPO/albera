@@ -56,4 +56,29 @@ jobs:
           ALBERA_RUN_WINDOWS_ACL_INTEGRATION: '1'
       - name: Architecture check
         run: npm run arch
+      # The demo exe (scripts/demo-exe) is otherwise only built by the hand-run Demo exe workflow, so a broken Launcher.cs or build.ps1 would surface there.
+      # One job only, and only when the change touches scripts/demo-exe/: the build packs node.exe into a zip and compiles, which adds about a minute.
+      - name: Demo exe build smoke (only when scripts/demo-exe/ changed)
+        if: runner.os == 'Windows' && matrix.node == 24
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BASE_SHA -and $env:BASE_SHA -notmatch '^0+$') {
+            git fetch --no-tags --depth=1 origin $env:BASE_SHA
+            if ($LASTEXITCODE -ne 0) { throw 'git fetch of the base commit failed' }
+            $changed = @(git diff --name-only $env:BASE_SHA HEAD -- scripts/demo-exe)
+            if ($LASTEXITCODE -ne 0) { throw 'git diff failed' }
+            if ($changed.Count -eq 0) { Write-Output 'scripts/demo-exe/ unchanged: skipped'; exit 0 }
+          }
+          # The runner's node.exe stands in for the pinned one; the LICENSE file is a placeholder (the release build in demo-exe.yml uses the real zip).
+          $node = Join-Path $env:RUNNER_TEMP 'node-for-demo'
+          New-Item -ItemType Directory -Force -Path $node | Out-Null
+          Copy-Item -LiteralPath (Get-Command node).Source -Destination $node
+          Set-Content -LiteralPath (Join-Path $node 'LICENSE') -Value 'CI build smoke only'
+          $out = Join-Path $env:RUNNER_TEMP 'demo-smoke'
+          & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/demo-exe/build.ps1 -NodeDir $node -OutDir $out
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path -LiteralPath (Join-Path $out 'albera-demo.exe') -PathType Leaf)) { throw 'albera-demo.exe was not built' }
       # Smoke reads the user's local Claude session store; run locally, not on hosted CI.

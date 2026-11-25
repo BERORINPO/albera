@@ -10,12 +10,15 @@ let opened = false;
 
 child.stdout.setEncoding('utf8');
 child.stdout.on('data', (chunk) => {
-  if (opened) return;
+  if (opened) { process.stdout.write(chunk); return; } // the code line is already behind us, so the rest (Ctrl+C hint, errors) is safe to show
   text += chunk;
-  const code = /bootstrap code: (\S+)/u.exec(text)?.[1];
-  if (!code) return;
+  const found = /bootstrap code: (\S+)\r?\n/u.exec(text); // wait for the end of the line so a code split across chunks is never cut short
+  if (!found) return;
+  const code = found[1];
   opened = true;
   console.log('The page is open in your browser. Close this window to stop the demo.');
+  const rest = text.slice(found.index + found[0].length);
+  if (rest) process.stdout.write(rest);
   if (process.env.ALBERA_DEMO_NOBROWSER) return;
   spawn('C:\\Windows\\System32\\cmd.exe', ['/d', '/c', 'start', '', `http://127.0.0.1:${port}/room/?demo=1#b=${code}`], { stdio: 'ignore', detached: true }).unref();
 });

@@ -55,6 +55,7 @@ jobs:
   attest:
     name: Attest albera-demo.exe
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
