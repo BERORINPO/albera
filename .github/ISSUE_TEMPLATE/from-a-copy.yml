@@ -1,5 +1,5 @@
-name: From a private copy or the explain map
-description: A problem or a wish from a private copy of ALBERA, its update pull request, or the explain map (tools/mochiba).
+name: From a private copy
+description: A problem or a wish from a private copy of ALBERA or its update pull request.
 title: "[copy] "
 body:
   - type: markdown
@@ -14,7 +14,6 @@ body:
     attributes:
       label: Which part
       options:
-        - Explain map (tools/mochiba)
         - Update pull request in a private copy (albera-updates workflow)
         - Session board
         - Runtime / jobs

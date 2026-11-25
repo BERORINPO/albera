@@ -1,5 +1,8 @@
 # ALBERA
 
+> - **Active work has moved** to the explain-map tool "mochiba", in a separate repository (private for now).
+> - **The job runtime here** (VM / WSL2 jobs, approval, ledger) **is frozen as of 2026-11-26**: kept, not maintained. Next review: 2026-12-31.
+
 ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The regular `albera` command is a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. A separate experimental `albera-runtime` command provides an isolated local Runtime approval/control screen that can start a real CLI after explicit approval. Installed CLI compatibility and browser GUI acceptance are unverified. The session dashboard also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
 
 English · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
@@ -37,9 +40,9 @@ ALBERA can have an AI work inside a Hyper-V VM, away from your own files, and by
 
 On a PC without Hyper-V, the session board and the demo work. A job never moves to the PC itself instead of a VM: [docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md).
 
-## Explain map (experimental, `tools/mochiba`)
+## Explain map (moved)
 
-A separate command-line tool for explaining what an AI wrote. From a repository's role tables, its imports and its git history it writes one self-contained HTML page: a map of the code, a step-by-step walk through each pull request, and a practice mode where you answer by pointing at boxes on the map. It uses no AI, reads the target repository only, and the page sends nothing anywhere. Node 22, no packages. The page is in Japanese for now: [tools/mochiba/README.md](tools/mochiba/README.md).
+The explain-map tool "mochiba" (a map of the code, a walk through each pull request, and explain practice) is no longer in this repository. It now lives in its own repository, which is private for now. Plans: [docs/roadmap.md](docs/roadmap.md).
 
 ## Private copies
 

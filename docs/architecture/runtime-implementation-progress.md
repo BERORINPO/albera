@@ -11,7 +11,10 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 
 Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 
-### サブスクでの最初のジョブ (stage 1 の残り)
+**2026-11-26:** 株主の決定 (D1〜D7、`docs/roadmap.md`) で、ジョブの仕組み (VM / WSL2 のジョブ、承認、台帳) は凍結した。各カードの頭に 済み / 凍結 / 不要 / やる と理由を付けた。凍結のカードは D2 の見直し (2026-12-31) まで動かさない。
+
+### [凍結] サブスクでの最初のジョブ (stage 1 の残り)
+- 判定 (2026-11-26): 凍結。署名つきの本物のジョブは今は回さない (D2)。2026-12-31 に見直す
 - 済み (2026-11-04): 移行、3 つのサービスの起動、トークンの保存、VM の起動。WebAuthn で承認する形 (#204〜#206) の merge
 - 止まっている理由: この PC の ALBERA は WebAuthn より前の版で、リモートデスクトップの中では承認の鍵 (Windows Hello) が使えない (2026-11-04 に測定)。新しい版へ入れ替える
 - やること: `U:\dev\albera-update-1104\owner` で (1) `1-key.cmd` をダブルクリックして手元 PC の Hello で確定、(2) `2-update.cmd` をダブルクリックして許可し、画面の key id を貼る、(3) `token.cmd` でトークンを入れ直す、(4) room の「Jobs」から「Approval test」、続けて本物のジョブ
@@ -19,20 +22,23 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: stage 1 の受入。サービスの身元で claude.exe が動く確認 (M4) と、本物の本人確認での承認 (M14)
 - 取り消し: 入れ替えは戻せない (アンインストールでトークンと両方の記録が消える。VM は残る)。ジョブは「全部止める」で止まり、承認しなければ何も起きない
 
-### 戻せる承認の採択 (AGM-1)
+### [凍結] 戻せる承認の採択 (AGM-1)
+- 判定 (2026-11-26): 凍結。D2 で runtime を止めたので、採択も PR3・PR4・PR6 も 2026-12-31 の見直しまで待つ
 - 済み (2026-11-06): AGM-2 を株主が承認した。Broker 用の鍵の発行と Authority への登録で、同じ鍵で WSL2 の run lease も署名する。鍵が実際に作られるのは、Yosuke が管理者でインストーラーを実行するとき
 - やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、AGM-1 を承認するか決める。Broker の WmiGate の許可リストに、チェックポイント・巻き戻し・電源・読み取りの行を足す。installer が VM を ProductionOnly にすることも含む。WSL2 には不要
 - 所要: 約 15 分 (Yosuke の読む時間)
 - これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる。WSL2 版は AGM-1 を待たない
 - 取り消し: 採択は revert できる。鍵は uninstall で消える
 
-### 作業フォルダの削除
+### [やる] 作業フォルダの削除
+- 判定 (2026-11-26): やる (株主の手作業)。凍結とは関係なく、ディスクの片付けだけ。消すかどうかは株主が決める
 - やること: `U:\dev\hyperv\clones\_legacy-probe-nana` (481 MB、旧版の取り出しで、再生成できる) をエクスプローラーで削除する。安全装置 (cc-safety-net) が、作業フォルダの外での一括削除を止めたため残っている
 - 所要: 約 1 分
 - これで進むもの: ディスクの片付けだけ
 - 取り消し: ごみ箱に入るので、戻せる
 
-### WSL2 版の判断 2 点 (ADR-012 の決定 2、4)
+### [凍結] WSL2 版の判断 2 点 (ADR-012 の決定 2、4)
+- 判定 (2026-11-26): 凍結。WSL2 のジョブも凍結した (D1)。段階 5 の最初のジョブを回さないので、決める必要が今は無い
 - やること: 次の 2 点を決める。どちらも推奨どおりなら「推奨で」の一言でよい
   - 決定 2: `.wslconfig` は変えない (推奨)。実イメージの G4 で、変えなくてもサンドボックスから `/dev/dxg` と `/mnt/wslg` が見えないと確認した
   - 決定 4: 段階 5 で YOSUKE-NOTE にサービスを入れる (推奨)。管理者権限と `claude.exe` のネイティブ版が要る
@@ -40,19 +46,22 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: 段階 5 の最初のジョブ。段階 2〜4 は決定を待たずに進む
 - 取り消し: できる (決定 4 はアンインストールで戻る)
 
-### WSL2 版の測定で Ubuntu を止める許可
+### [凍結] WSL2 版の測定で Ubuntu を止める許可
+- 判定 (2026-11-26): 凍結。測りたかった gate は実トークンのジョブの前のもので、そのジョブを回さない (D1、D2)
 - やること: seccomp なしの AF_VSOCK 対照 (G2) と、`wsl --shutdown` 後の起動時間 (G0) を実イメージで測ってよい時間を決める
 - 所要: 測定は約 5 分。その間 Ubuntu と Docker が止まる。止まったままなら `wsl --shutdown` で戻る
 - これで進むもの: 実トークン前の gate のうち、残りの 2 つ
 - 取り消し: 測定そのものは何も残さない
 
-### ご意見の受付 1/2: GitHub App を作る
+### [不要] ご意見の受付 1/2: GitHub App を作る
+- 判定 (2026-11-26): 今は不要。受付は room の「ご意見」用で、room は凍結した。他の人へも配らない (D7)。D7 を見直すときに考え直す
 - やること: (1) 項目入りの作成ページを開き、内容を確かめて「Create GitHub App」: https://github.com/settings/apps/new?name=ALBERA%20feedback%20intake&description=Files%20ALBERA%20in-app%20feedback%20into%20a%20private%20intake%20repository.&url=https%3A%2F%2Fgithub.com%2FBERORINPO%2Falbera&public=false&webhook_active=false&issues=write (2) できた App の画面で「Generate a private key」(.pem が保存される) (3)「Install App」→ BERORINPO →「Only select repositories」で albera-feedback だけを選んで Install (4) App ID (App の設定画面の上) と installation の番号 (Install 後の画面のアドレス末尾の数字) を控える
 - 所要: 約 5 分 (Yosuke の作業時間)
 - これで進むもの: 受付 Worker のデプロイ (次のカード)。docs/architecture/feedback-intake.md 7 節
 - 取り消し: できる (App を削除すれば、その時点から何も作れない)
 
-### ご意見の受付 2/2: 受付 Worker をデプロイする
+### [不要] ご意見の受付 2/2: 受付 Worker をデプロイする
+- 判定 (2026-11-26): 今は不要。1/2 と同じ理由 (room の凍結、D7)
 - やること: `pwsh C:\dev\albera-feedback\scripts\feedback-intake-deploy.ps1 -PemPath <保存した .pem> -AppId <App ID> -InstallationId <番号>`。初回だけ Wrangler 4.151.3 (npm、Cloudflare 公式、約 150 MB) が npm の cache に入り、ブラウザで Cloudflare のログインが開く。最後に表示される受付の URL をベロに伝え、.pem を削除する
 - 所要: 約 5 分 (ダウンロード待ちを除く)
 - これで進むもの: room の「ご意見」を既定オンにする PR (URL を FEEDBACK_ENDPOINT に入れる)

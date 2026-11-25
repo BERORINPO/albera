@@ -4,11 +4,11 @@
 
 ### Added
 
-- **Explain map** (`tools/mochiba`, experimental): a separate command-line tool that writes one self-contained HTML page from a repository's role tables, imports and git history: a map of the code, a walk through each pull request, and a practice mode. No AI, read-only, nothing sent. Japanese page for now.
 - **Private copies**: `.github/workflows/albera-updates.yml` and `scripts/upstream-sync.mjs`. In a private copy of ALBERA (made with its history), a weekly job opens or refreshes one pull request `albera-update` with the new CHANGELOG lines and commits; a person merges it. It never runs in BERORINPO/albera. How to set one up: `docs/private-copy.md`. Problems and wishes from a copy go to a new public issue form, `.github/ISSUE_TEMPLATE/from-a-copy.yml`, which the update pull request links to.
 
 ### Changed
 
+- **Direction (2026-11-26)**: active work moved to the explain-map tool "mochiba", which now lives in its own repository (private for now) and is no longer in ALBERA. In a private copy, the next update pull request deletes its folder. The VM / WSL2 job runtime (jobs, approval, ledger) is frozen: kept, not maintained; next review 2026-12-31. See `docs/roadmap.md`.
 - Rebrand Pigeonholes as ALBERA. The npm package and CLI command are now `albera`; runtime configuration uses `ALBERA_*`, with the previous `PIGEONHOLES_*` names kept as fallbacks during migration.
 - Browser preferences and canvas positions migrate from the old local-storage keys by reading them and writing to the new ALBERA keys. Existing entries are retained.
 - This release remains read-only and keeps the existing session board scope.
