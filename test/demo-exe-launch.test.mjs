@@ -26,6 +26,15 @@ test('the launcher starts the demo room and never prints the one-time code', (t)
   assert.doesNotMatch(result.stdout, /abc_DEF-123/u);
 });
 
+test('after the page opens, the room output after the code line reaches the window', (t) => {
+  const dir = root(t, "console.log('One-time UI bootstrap code: abc_DEF-123'); console.log('Press Ctrl+C to stop.'); setTimeout(() => console.log('later line'), 50);\n");
+  const result = run(dir);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Press Ctrl\+C to stop\./u);
+  assert.match(result.stdout, /later line/u);
+  assert.doesNotMatch(result.stdout, /abc_DEF-123/u);
+});
+
 test('the demo page has no Credentials button: an unsigned demo must never ask for a token', () => {
   assert.ok(DEMO_HIDDEN_BUTTONS.includes('open-settings'));
   assert.equal(isDemoPage('?demo=1'), true);

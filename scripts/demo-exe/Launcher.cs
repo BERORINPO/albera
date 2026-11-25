@@ -38,6 +38,13 @@ static class Launcher
             using (Process node = Process.Start(start))
             {
                 node.WaitForExit();
+                if (node.ExitCode != 0)
+                {
+                    // Opened by double-click, the window would close at once and take the reason with it.
+                    Console.WriteLine("The demo stopped (exit code " + node.ExitCode + "). If another copy is open or port " + Port + " is in use, close it and try again.");
+                    Console.WriteLine("Reports: https://github.com/BERORINPO/albera/issues  Press Enter to close.");
+                    Console.ReadLine();
+                }
                 return node.ExitCode;
             }
         }
