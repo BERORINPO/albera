@@ -9,6 +9,9 @@ import { createRoomBootstrapFile, createWindowsFileStore } from './room-bootstra
 import { createRoomHost } from './room-host.mjs';
 import { createRoomFeedbackRoutes } from './room-feedback-routes.mjs';
 import { createRoomJobRoutes } from './room-job-routes.mjs';
+import { createRoomTalkRoutes } from './room-talk-routes.mjs';
+import { createClaudeMainAi } from './main-ai-claude.mjs';
+import { disabledMainAi } from './main-ai-contract.mjs';
 import { missingRoomParts } from './room-demo.mjs';
 import { GIT_INSTALL_DIR, openRoomApproval, PIPE_CLIENT_INSTALL_DIR } from './room-approval-wiring.mjs';
 import { createRoomJobApprovals, createSubmitWatch } from './room-service-approvals.mjs';
@@ -33,7 +36,9 @@ import { ALBERA_VERSION } from './albera-version.mjs';
 //     port, no URL and no code (the host captures this process's output into log files);
 //   - the hands: Claude Code per approved task.start, in a new empty configuration folder per run (room-service-hands.mjs);
 //   - the feedback panel, OFF unless the service file says `feedback: true` (room-service-config.mjs): then the route GET /api/feedback is registered and the room's CSP connect-src gets the intake's
-//     one origin. The one thing it reports about this installation is the ALBERA version (albera-version.mjs; `deps.version` in tests).
+//     one origin. The one thing it reports about this installation is the ALBERA version (albera-version.mjs; `deps.version` in tests);
+//   - the talk panel (room-talk-routes.mjs). Its REAL main AI (main-ai-claude.mjs: Claude Code with no tools) runs only when the service file says `mainAi: true`; by default the panel is there
+//     and says it is not available (`disabledMainAi`). `deps.mainAi` replaces either one (the tests' Fake).
 // The bootstrap file sink is REQUIRED. Without a sink the room host would take its CLI launch route and hand the code to whoever called listen(); so a missing sink refuses the start before anything
 // is opened, and so does a settings file with no `ui` block to build one from. The approval flow's durable journal is required too (openRoomApproval refuses without it).
 // A `ui\room.json` of an earlier run is removed first thing, before the approval wiring is opened, and replaced by the new port and code as soon as the host listens; if that write fails the start fails.
@@ -70,7 +75,8 @@ export function parseRoomServiceArgs(args, platform = process.platform) {
  * @param {{ dataRoot: string }} options
  * @param {{ bootstrapSink?: object|null, io?: object, approvalDeps?: object, secretStore?: object, createBootstrapStore?: Function, mcpEntryPath?: string,
  *   driverOptions?: object, createDriver?: Function, claudeGuard?: object, claudeInstallDir?: string, log?: (line: string) => void, captureIntervalMs?: number, tickMs?: number,
- *   version?: string }} [deps] test seams; the defaults are the real parts. `version` is the ALBERA version the feedback panel sends (default ALBERA_VERSION,
+ *   version?: string, mainAi?: object, mainAiOptions?: object }} [deps] test seams; the defaults are the real parts. `mainAi` replaces the talk panel's main AI (Fake); `mainAiOptions` reaches the
+ *   real adapter (spawnImpl and so on) when the service file turns it on. `version` is the ALBERA version the feedback panel sends (default ALBERA_VERSION,
  *   albera-version.mjs, which a test keeps equal to package.json).
  */
 export async function startRoomService({ dataRoot } = {}, deps = {}) {
@@ -93,11 +99,14 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
   });
   let room;
   let hands;
+  let mainAi = disabledMainAi;
   try {
     const { settings } = approval;
     const secretStore = deps.secretStore ?? createControlPlaneSecretStore({ secretsDir: paths.secretsDir, helperPath: settings.desktop.helperPath, helperSha256: settings.desktop.helperSha256 });
     const board = createAgentStatusBoard();
     const labelOf = (vmName) => vmName.slice(0, 32);
+    const claudeGuard = deps.claudeGuard ?? createWindowsFolderGuard({ installDir: config.claudeInstallDir });
+    mainAi = deps.mainAi ?? (config.mainAi ? createClaudeMainAi({ claude: config.claude, secretStore, runRoot: paths.runRoot, claudeGuard, log: (line) => log(line), ...deps.mainAiOptions }) : disabledMainAi);
     // A WSL2 computer needs the bridge settings (the parser refuses one without them). The lease comes with the Broker's reply to the claim; a Broker with no key sends none.
     const bridge = settings.wsl2 === null ? null : { pipeName: settings.wsl2.pipeName, serverSid: settings.wsl2.serverSid, ...(settings.wsl2.serverImageSha256 === undefined ? {} : { serverImageSha256: settings.wsl2.serverImageSha256 }), ...settings.desktop };
     const bridgeClient = bridge === null ? null : (deps.createBridgeClient ?? createWsl2BridgeClient)(bridge);
@@ -113,7 +122,7 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
     const repositoryByComputer = new Map([...settings.computers.values()].filter((c) => c.isolation !== undefined).map((c) => [c.computerId, c.repositoryId]));
     hands = createRoomServiceHands({
       targets: settings.computers, secretStore, runRoot: paths.runRoot, claude: config.claude, log: (line) => log(line), wsl2,
-      claudeGuard: deps.claudeGuard ?? createWindowsFolderGuard({ installDir: config.claudeInstallDir }),
+      claudeGuard,
       mcp: { command: process.execPath, entryPath: deps.mcpEntryPath ?? MCP_ENTRY, broker: { pipeName: settings.broker.pipeName, serviceName: settings.broker.expect.serviceName, ...settings.desktop } },
       driverOptions: deps.driverOptions, ...(deps.createDriver === undefined ? {} : { createDriver: deps.createDriver }),
       onEvent: (vmName, event) => { board.record(vmName, event); room?.recordFleetEvent(vmName, event); },
@@ -127,6 +136,7 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
       .map(([vmName, c]) => ({ computerId: c.computerId, label: vmName, ...(c.isolation === undefined ? {} : { level: 'wsl2' }) }));
     const apiRoutes = [
       ...createRoomSettingsRoutes({ secretStore }), ...createRoomJobRoutes({ approvals, hands: { start: hands.start, stopAll: hands.stopAll, results: hands.results }, targets }),
+      ...createRoomTalkRoutes({ mainAi, targets, log: (line) => log(line) }),
       ...(config.feedback ? createRoomFeedbackRoutes({ version: deps.version ?? ALBERA_VERSION }) : []), // the route and the CSP origin go together: both or neither
     ];
     room = createRoomHost({
@@ -140,6 +150,7 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
     await room.listen(0); // 127.0.0.1 only (room-host.mjs); the port goes to the sink and nowhere else
   } catch (error) {
     await hands?.close().catch(() => {});
+    await Promise.resolve().then(() => mainAi.close()).catch(() => {});
     await room?.close().catch(() => {}); // the host clears the file itself
     if (!room) await clearSink(); // no host was made, so nobody else will
     approval.close();
@@ -150,6 +161,7 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
     close() {
       closing ??= (async () => {
         await hands.close();
+        await mainAi.close();
         await room.close(); // clears the bootstrap file
         approval.close();
       })();

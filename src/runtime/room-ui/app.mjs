@@ -258,6 +258,7 @@ function boot() {
   phase('connecting');
   void (async () => {
     // "Open ALBERA" opens /room/#b=<code>: take the code out of the address first, then trade it for the session cookie.
+    if (api.isDemoPage(location.search)) for (const id of api.DEMO_HIDDEN_BUTTONS) document.getElementById(id)?.remove();
     const code = api.bootstrapFromHash(location.hash);
     if (code) {
       history.replaceState(null, '', location.pathname + location.search);
