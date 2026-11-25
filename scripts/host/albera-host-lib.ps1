@@ -99,13 +99,14 @@ function Get-KnownDataFiles {
     'broker\journal.sqlite', 'broker\journal.sqlite-wal', 'broker\journal.sqlite-shm', 'broker\journal.sqlite-journal',
     'authority\AlberaApprovalAuthority.service.json', 'authority\policy.json', 'authority\approver-keys.json',
     'control-plane\albera.approval.json', 'control-plane\operations.sqlite', 'control-plane\operations.sqlite-wal', 'control-plane\operations.sqlite-shm',
-    'control-plane-config\AlberaControlPlane.service.json', 'control-plane-config\albera.approval.json'
+    'control-plane-config\AlberaControlPlane.service.json', 'control-plane-config\albera.approval.json',
+    'wsl-bridge\bridge.json', 'wsl-bridge\first-check.json', 'wsl-bridge\lease-floor', 'wsl-bridge\albera-wsl2.tar'
   )
 }
-function Get-KnownDataFolders { @('broker-config', 'broker', 'authority', 'control-plane', 'control-plane-config', 'secrets', 'ui') }
+function Get-KnownDataFolders { @('broker-config', 'broker', 'authority', 'control-plane', 'control-plane-config', 'secrets', 'ui', 'wsl-bridge') }
 # Folders the Control Plane SERVICE itself fills while it runs (host logs, one folder per Claude Code run, DPAPI blobs and their .meta files, ui\room.json). What is in them is not listed by name:
 # uninstall removes them as a whole after the link check, and they are the only places where an unlisted file is allowed.
-function Get-KnownDataWorkFolders { @('control-plane\logs', 'control-plane\claude-run', 'secrets', 'ui') }
+function Get-KnownDataWorkFolders { @('control-plane\logs', 'control-plane\claude-run', 'secrets', 'ui', 'wsl-bridge\state', 'wsl-bridge\distributions') }
 
 # ---------------------------------------------------------------------------------------------- validators (mirror the C# rules)
 $script:IdRegex = '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'   # ActionDigest.IdPattern
@@ -495,7 +496,8 @@ function ConvertTo-ApproverKeysManifestValue($Records) {
 
 # ---------------------------------------------------------------------------------------------- the three config files
 # $Computers is $null (or empty) for an install without -GrantHyperVToBroker: the config is then exactly the seven keys it always had. With it, the optional `computers` key is added last.
-function Get-BrokerConfig($Layout, [string]$ControlPlaneSid, [string]$AuthoritySpki, $Computers = $null) {
+# $Wsl2 is $null without -AddWsl2Computer; with it { ComputerId, KeyName, KeyId }: the `kind: wsl2` computer is added to `computers` and the `attestation` key is added last (ServiceConfig.cs).
+function Get-BrokerConfig($Layout, [string]$ControlPlaneSid, [string]$AuthoritySpki, $Computers = $null, $Wsl2 = $null) {
   $c = Get-HostConstants
   $config = [ordered]@{
     pipeName = $c.BrokerPipeName
@@ -506,7 +508,11 @@ function Get-BrokerConfig($Layout, [string]$ControlPlaneSid, [string]$AuthorityS
     leaseId = $c.LeaseId
     policyVersion = $c.PolicyVersion
   }
-  if ($null -ne $Computers -and @($Computers).Count -gt 0) { $config['computers'] = @($Computers) }
+  $entries = @()
+  if ($null -ne $Computers -and @($Computers).Count -gt 0) { $entries += @($Computers) }
+  if ($null -ne $Wsl2) { $entries += [ordered]@{ computerId = $Wsl2.ComputerId; kind = 'wsl2' } }
+  if ($entries.Count -gt 0) { $config['computers'] = @($entries) }
+  if ($null -ne $Wsl2) { $config['attestation'] = [ordered]@{ keyName = $Wsl2.KeyName; keyId = $Wsl2.KeyId } }
   $config
 }
 # One entry of the Broker config `computers` list (ServiceConfig.cs: computerId = contract id, vmId = lowercase GUID of the VM).
@@ -517,7 +523,8 @@ function Get-BrokerComputers([string]$ComputerId, [string]$VmId) {
 }
 # $Approver holds approverSid and EITHER the legacy pair (approverKeyId + approverPublicKey: one Windows Hello key) OR approverKeys (1 to 16 key records, approver-webauthn.md). Never both: the Authority
 # refuses a config that has the pair and the list (config_approver_keys), and this function will not write one.
-function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver) {
+# $Attestation is $null without -AddWsl2Computer; with it { keyId, spki }: the Broker's attestation key the Authority pins (AuthorityConfig.cs: attestationKeyId + attestationPublicKey, only together).
+function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver, $Attestation = $null) {
   $c = Get-HostConstants
   $hasList = $null -ne $Approver.PSObject.Properties['approverKeys']
   $hasPair = ($null -ne $Approver.PSObject.Properties['approverKeyId']) -or ($null -ne $Approver.PSObject.Properties['approverPublicKey'])
@@ -538,6 +545,7 @@ function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver) {
     $config['approverKeyId'] = $Approver.approverKeyId
     $config['approverPublicKey'] = $Approver.approverPublicKey
   }
+  if ($null -ne $Attestation) { $config['attestationKeyId'] = $Attestation.keyId; $config['attestationPublicKey'] = $Attestation.spki }
   $config['audience'] = $c.Audience
   $config['policyVersion'] = $c.PolicyVersion
   $config
@@ -547,7 +555,8 @@ function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver) {
 # the journal it names is in control-plane\ (the one place the service can write).
 # $HelperSha256 is $null for an install without -GrantHyperVToBroker: the settings are then without a desktop block. With it the `desktop` block that the gated room requires
 # (room-approval-wiring.mjs: exactly { helperPath, helperSha256 }, placed after `computers`) is added: the installed pipe client helper and the SHA-256 of that exe. Both are public values.
-function Get-ControlPlaneSettings($Layout, [string]$ProjectId, [string]$VmName, [string]$ComputerId, [string]$HelperSha256 = $null) {
+# $Wsl2 is $null without -AddWsl2Computer; with it { ComputerId, RepositoryId, PipeName, ServerSid, Git }: a second computer (no VM) and the `wsl2` block (room-approval-wiring.mjs), which needs the desktop block too.
+function Get-ControlPlaneSettings($Layout, [string]$ProjectId, [string]$VmName, [string]$ComputerId, [string]$HelperSha256 = $null, $Wsl2 = $null) {
   $c = Get-HostConstants
   $settings = [ordered]@{
     version = 1
@@ -560,6 +569,11 @@ function Get-ControlPlaneSettings($Layout, [string]$ProjectId, [string]$VmName, 
   if (-not [string]::IsNullOrEmpty($HelperSha256)) {
     if (-not (Test-TreeHashValue $HelperSha256)) { throw 'helper_sha256_invalid' }
     $settings['desktop'] = [ordered]@{ helperPath = $Layout.PipeClientExe; helperSha256 = $HelperSha256 }
+  }
+  if ($null -ne $Wsl2) {
+    if ([string]::IsNullOrEmpty($HelperSha256)) { throw 'wsl2_needs_desktop_block' }
+    $settings['computers'][$Wsl2.ComputerId] = [ordered]@{ computerId = $Wsl2.ComputerId; isolation = 'wsl2'; repositoryId = $Wsl2.RepositoryId }
+    $settings['wsl2'] = [ordered]@{ pipeName = $Wsl2.PipeName; serverSid = $Wsl2.ServerSid; git = $Wsl2.Git }
   }
   $settings
 }
@@ -611,22 +625,31 @@ function Get-ByteLength([string]$Text) { [System.Text.Encoding]::UTF8.GetByteCou
 
 # Each returns the list of fixed reason words (empty = the real service would accept the shape). They cannot see the machine (the SID lookup, the folder ACLs, whether a folder
 # exists), and `service-check` run from an elevated console cannot either: see albera-host.ps1 ("service-check is inconclusive").
-# Mirror of ServiceConfig.ReadComputers: an array of 0..8 entries, each exactly { computerId, vmId } (a contract id and a lowercase GUID), every computerId and every vmId at most once.
+# Mirror of ServiceConfig.ReadComputers: an array of 0..8 entries, each exactly { computerId, vmId } (a contract id and a lowercase GUID) or { computerId, kind: "wsl2" } (a contract id),
+# every computerId at most once across both kinds and every vmId at most once.
 function Test-ComputersList($List) {
   if ($null -eq $List -or $List -is [string] -or $List -isnot [System.Array]) { return $false }
   $items = @($List)
   if ($items.Count -gt 8) { return $false }
+  $vmIds = New-Object System.Collections.Generic.List[string]
   foreach ($e in $items) {
-    if ($e -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $e @('computerId', 'vmId'))) { return $false }
-    if ($e.computerId -isnot [string] -or $e.vmId -isnot [string] -or -not (Test-HostId $e.computerId) -or -not (Test-VmGuid $e.vmId)) { return $false }
+    if ($e -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+    if (Test-SameKeySet $e @('computerId', 'kind')) {
+      if ($e.computerId -isnot [string] -or $e.kind -isnot [string] -or $e.kind -cne 'wsl2' -or -not (Test-HostId $e.computerId)) { return $false }
+    }
+    elseif (Test-SameKeySet $e @('computerId', 'vmId')) {
+      if ($e.computerId -isnot [string] -or $e.vmId -isnot [string] -or -not (Test-HostId $e.computerId) -or -not (Test-VmGuid $e.vmId)) { return $false }
+      $vmIds.Add($e.vmId)
+    }
+    else { return $false }
   }
-  (@($items | ForEach-Object { $_.computerId } | Sort-Object -Unique).Count -eq $items.Count) -and (@($items | ForEach-Object { $_.vmId } | Sort-Object -Unique).Count -eq $items.Count)
+  (@($items | ForEach-Object { $_.computerId } | Sort-Object -Unique).Count -eq $items.Count) -and (@($vmIds | Sort-Object -Unique).Count -eq $vmIds.Count)
 }
 # True when the Broker config holds exactly the one computer the install intends (used to tell a finished config from one written before -GrantHyperVToBroker).
 function Test-BrokerConfigComputers([string]$Json, [string]$ComputerId, [string]$VmId) {
   try { $o = $Json | ConvertFrom-Json } catch { return $false }
   if ($null -eq $o.PSObject.Properties['computers'] -or -not (Test-ComputersList $o.computers)) { return $false }
-  $items = @($o.computers)
+  $items = @(@($o.computers) | Where-Object { $null -ne $_.PSObject.Properties['vmId'] })   # a `kind: wsl2` entry (-AddWsl2Computer) is not a VM
   ($items.Count -eq 1) -and ($items[0].computerId -ceq $ComputerId) -and ($items[0].vmId -ceq $VmId)
 }
 # True when the Control Plane settings text has a `desktop` key at all (any value). An install without -GrantHyperVToBroker writes none, so status reports one found without the grant record.
@@ -688,6 +711,8 @@ function Test-AuthorityConfigText([string]$Json) {
   if ($hasList -and ($names -ccontains 'approverKeyId' -or $names -ccontains 'approverPublicKey')) { $reasons.Add('config_approver_keys'); return , @($reasons) }
   if (-not $hasList -and $size -gt 4096) { $reasons.Add('config_too_large'); return , @($reasons) }   # the size the Authority has always read; only a key list needs more
   $expected = @('pipeRoot', 'controlPlaneSid', 'approverSid', 'signingKeyName', 'signingKeyProvider', 'kid', 'audience', 'policyVersion') + $(if ($hasList) { @('approverKeys') } else { @('approverKeyId', 'approverPublicKey') })
+  $hasAttestation = ($names -ccontains 'attestationKeyId') -or ($names -ccontains 'attestationPublicKey')   # the Broker's attestation key (-AddWsl2Computer): both keys or neither
+  if ($hasAttestation) { $expected = @($expected) + @('attestationKeyId', 'attestationPublicKey') }
   $allStrings = @($o.PSObject.Properties | Where-Object { $_.Name -cne 'approverKeys' -and $_.Value -isnot [string] }).Count -eq 0
   if (-not (Test-SameKeySet $o $expected) -or -not $allStrings) { $reasons.Add('config_keys'); return , @($reasons) }
   if (-not (Test-PipeRoot $o.pipeRoot)) { $reasons.Add('pipe_root') }
@@ -702,6 +727,8 @@ function Test-AuthorityConfigText([string]$Json) {
     if (-not (Test-HostId $o.approverKeyId)) { $reasons.Add('approver_key_id') }
     if (-not (Test-Rsa2048Spki $o.approverPublicKey)) { $reasons.Add('approver_public_key') }
   }
+  if ($hasAttestation -and -not (Test-HostId $o.attestationKeyId)) { $reasons.Add('attestation_key_id') }
+  if ($hasAttestation -and -not (Test-P256Spki $o.attestationPublicKey)) { $reasons.Add('attestation_public_key') }
   if (-not (Test-AudienceName $o.audience)) { $reasons.Add('audience') }
   if (-not (Test-HostId $o.policyVersion)) { $reasons.Add('policy_version') }
   , @($reasons)
@@ -724,16 +751,18 @@ function Test-AuthorityConfigKeyList($List) {
 # order (the legacy pair counts as one hello-rsa key, as the Authority reads it). Approver = the object Get-AuthorityConfig takes (approverSid and the pair or the list), to rebuild the config with.
 function Get-AuthorityConfigApproverKeys([string]$Json) {
   $reasons = Test-AuthorityConfigText $Json
-  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Reasons = @($reasons); Legacy = $false; Approver = $null; Keys = @() } }
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Reasons = @($reasons); Legacy = $false; Approver = $null; Keys = @(); Attestation = $null } }
   $o = $Json | ConvertFrom-Json
+  # the Broker's attestation key (-AddWsl2Computer) is carried along: set-approver rebuilds the config and must not drop it
+  $attestation = if ($null -ne $o.PSObject.Properties['attestationKeyId']) { [pscustomobject]@{ keyId = [string]$o.attestationKeyId; spki = [string]$o.attestationPublicKey } } else { $null }
   if ($null -ne $o.PSObject.Properties['approverKeys']) {
     $records = @($o.approverKeys | ForEach-Object { ConvertTo-ApproverKeyObject $_ })
-    return [pscustomobject]@{ Reasons = @(); Legacy = $false; Approver = [pscustomobject]@{ approverSid = [string]$o.approverSid; approverKeys = $records }; Keys = @($records | ForEach-Object { [pscustomobject]@{ KeyId = $_.keyId; Kind = $_.kind } }) }
+    return [pscustomobject]@{ Reasons = @(); Legacy = $false; Approver = [pscustomobject]@{ approverSid = [string]$o.approverSid; approverKeys = $records }; Keys = @($records | ForEach-Object { [pscustomobject]@{ KeyId = $_.keyId; Kind = $_.kind } }); Attestation = $attestation }
   }
   [pscustomobject]@{
     Reasons = @(); Legacy = $true
     Approver = [pscustomobject]@{ approverSid = [string]$o.approverSid; approverKeyId = [string]$o.approverKeyId; approverPublicKey = [string]$o.approverPublicKey }
-    Keys = @([pscustomobject]@{ KeyId = [string]$o.approverKeyId; Kind = 'hello-rsa' })
+    Keys = @([pscustomobject]@{ KeyId = [string]$o.approverKeyId; Kind = 'hello-rsa' }); Attestation = $attestation
   }
 }
 # The status line about the approver keys: the keys the Authority config holds (ids and kinds), compared with the install record. $RecordValues = the manifest's `values`. -> @{ State; Text }.
@@ -1158,8 +1187,8 @@ function Test-ManifestShape($M) {
   if ($M -isnot [System.Collections.IDictionary] -or $M['schema'] -ne 1 -or $M['tool'] -cne 'albera-host.ps1' -or @('partial', 'complete') -cnotcontains $M['state']) { $reasons.Add('manifest_header'); return , @($reasons) }
   $created = $M['created']; $values = $M['values']
   if ($created -isnot [System.Collections.IDictionary] -or $values -isnot [System.Collections.IDictionary]) { $reasons.Add('manifest_sections'); return , @($reasons) }
-  foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key', 'hyperVGrant', 'controlPlane', 'claude', 'launcher', 'shortcuts', 'runEntry') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
-  foreach ($k in $values.Keys) { if (@('authoritySpki', 'controlPlaneSid', 'approverSid', 'approverKeyId', 'approverKeys', 'approverKeysSetAt', 'brokerServiceSid', 'authorityServiceSid') -cnotcontains $k) { $reasons.Add('values_key:' + $k) } }
+  foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key', 'hyperVGrant', 'controlPlane', 'claude', 'launcher', 'shortcuts', 'runEntry', 'wsl2') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
+  foreach ($k in $values.Keys) { if (@('authoritySpki', 'controlPlaneSid', 'approverSid', 'approverKeyId', 'approverKeys', 'approverKeysSetAt', 'brokerServiceSid', 'authorityServiceSid', 'attestationSpki') -cnotcontains $k) { $reasons.Add('values_key:' + $k) } }
   # The approver key list the install (or set-approver) recorded: ids and kinds only, 1 to 16, in the contract's form. approverKeysSetAt is the UTC time set-approver last changed it.
   if ((Test-HasKey $values 'approverKeys') -and -not (Test-ApproverKeysManifestList $values['approverKeys'])) { $reasons.Add('approver_keys_record') }
   if ((Test-HasKey $values 'approverKeysSetAt') -and ($values['approverKeysSetAt'] -isnot [string] -or $values['approverKeysSetAt'] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z')) { $reasons.Add('approver_keys_set_at') }
@@ -1185,6 +1214,8 @@ function Test-ManifestShape($M) {
     foreach ($k in $created['binaries'].Keys) { if ($script:HashComponents -cnotcontains $k) { $reasons.Add('binary_name:' + $k) } }
   }
   if ((Test-HasKey $values 'authoritySpki') -and -not (Test-P256Spki $values['authoritySpki'])) { $reasons.Add('authority_spki') }
+  if ((Test-HasKey $values 'attestationSpki') -and -not (Test-P256Spki $values['attestationSpki'])) { $reasons.Add('attestation_spki') }
+  if ((Test-HasKey $created 'wsl2') -and -not (Test-Wsl2Record $created['wsl2'])) { $reasons.Add('wsl2_record') }
   , @($reasons | Select-Object -Unique)
 }
 # $Recorded: the manifest's created.user (name, sid) or $null. $Live: @{ Name; Sid; Description } read from the machine or $null. Returns why this account must NOT be removed.
@@ -1435,4 +1466,318 @@ function ConvertFrom-LegacyInstall($Manifest, [string]$BrokerJson, [string]$Auth
       LegacySid = [string]$created['user']['sid']
     }
   }
+}
+
+# ---------------------------------------------------------------------------------------------- the WSL2 computer (-AddWsl2Computer; ADR-012 phase 5, ADR-002 Amendment 2026-11-04)
+# One option adds: the Broker's CNG attestation key (the only place it is made), the three places that hold its public half (the Authority's pinned key, the bridge's brokerKeyId + brokerSpki and the Broker's
+# `attestation`), the WSL bridge program (administrator-only folder), its config, its lease floor file, the `kind: wsl2` computer and the `wsl2` block of the approval settings. Everything below is PURE
+# (values in, values out) unless it says otherwise. NOT RUN on a real PC.
+function Get-Wsl2Constants {
+  [ordered]@{
+    DefaultComputerId = 'wsl-01'
+    AttestationKeyName = 'AlberaHostBroker-attest-1'   # the CNG key name in the Broker config `attestation.keyName` (1..64 of letters, digits, . _ -)
+    AttestationKeyId = 'albera-broker-attest-1'   # the id the run lease names its signer by: the Authority's attestationKeyId, the bridge's brokerKeyId, the Broker's attestation.keyId
+    BridgePipeName = 'ALBERA_WslBridge'   # the settings' wsl2.pipeName grammar ([A-Za-z0-9_-]) is narrower than the bridge's: this name passes both
+    RunValueName = 'AlberaWslBridge'
+    ImageFileName = 'albera-wsl2.tar'
+    DefaultGitPath = 'C:\Program Files\Git\mingw64\bin\git.exe'   # the real git.exe, not the cmd\git.exe launcher
+    GitInstallDir = 'C:\Program Files\Git'   # room-approval-wiring.mjs GIT_INSTALL_DIR: the settings refuse a git outside it
+    MinWslVersion = '2.4.0'   # the values the bridge's config comment gives (BridgeConfig.cs); the floor itself is the owner's to raise
+    MinKernelVersion = '6.6.87'
+    MaxRepositories = 8
+    FirstStartWord = 'control_plane_is_self'   # what the bridge prints in a NORMAL console when its Control Plane SID is the account it runs as (BRIDGE_FATAL=<word>, exit 77)
+  }
+}
+# Where the WSL2 parts go. Pure: derived from the host layout.
+function Get-Wsl2Layout($Layout) {
+  $c = Get-Wsl2Constants
+  $data = Join-Path $Layout.DataRoot 'wsl-bridge'
+  [ordered]@{
+    BinDir = Join-Path $Layout.InstallRoot 'bin\wsl-bridge'
+    BridgeExe = Join-Path $Layout.InstallRoot 'bin\wsl-bridge\albera-wsl-bridge.exe'
+    DataDir = $data   # administrators write; the owner (the bridge's account) reads: config, floor file, image
+    Config = Join-Path $data 'bridge.json'
+    FirstCheckConfig = Join-Path $data 'first-check.json'   # made for the first-start check and deleted again
+    FloorFile = Join-Path $data 'lease-floor'
+    Image = Join-Path $data $c.ImageFileName
+    StateDir = Join-Path $data 'state'   # the bridge writes here (owner Modify)
+    DistributionsDir = Join-Path $data 'distributions'   # and here
+  }
+}
+function Test-Wsl2GitPath([string]$Path) {
+  $c = Get-Wsl2Constants
+  if (-not (Test-PlainAbsolutePath $Path) -or -not $Path.EndsWith('.exe', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+  $Path.StartsWith($c.GitInstallDir + '\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+# $V = { ComputerId; RepositoryId; RepositoryPath; ImagePath; ImageSha256; BridgeTreeHash; FloorExpiresAt; GitPath }. $NowEpoch = seconds since 1970. $HyperVComputerId = the id the Hyper-V computer uses (one id once across both kinds).
+# Returns the reason words (empty = every value has the shape the configs need). Does not look at the machine.
+function Test-Wsl2Inputs($V, [long]$NowEpoch, [string]$HyperVComputerId) {
+  $r = New-Object System.Collections.Generic.List[string]
+  if (-not (Test-HostId $V.ComputerId)) { $r.Add('wsl2_computer_id') }
+  if ($V.ComputerId -ceq $HyperVComputerId) { $r.Add('wsl2_computer_id_same_as_vm_computer') }
+  if (-not (Test-HostId $V.RepositoryId)) { $r.Add('wsl2_repository_id') }
+  if (-not (Test-PlainAbsolutePath $V.RepositoryPath)) { $r.Add('wsl2_repository_path') }
+  if (-not (Test-PlainAbsolutePath $V.ImagePath)) { $r.Add('wsl2_image_path') }
+  if (-not (Test-TreeHashValue $V.ImageSha256)) { $r.Add('wsl2_image_sha256') }
+  if (-not (Test-TreeHashValue $V.BridgeTreeHash)) { $r.Add('wsl2_bridge_tree_hash') }
+  if (-not (Test-Wsl2GitPath $V.GitPath)) { $r.Add('wsl2_git_path') }
+  if ($V.FloorExpiresAt -le $NowEpoch -or $V.FloorExpiresAt -gt 9007199254740991) { $r.Add('wsl2_floor_expires_at') }   # the bridge refuses past it: a floor already expired would refuse every run
+  , @($r)
+}
+# The tree hash of the bridge folder: the lines "<relative path with />\t<sha256>\n" of every file, sorted ordinal, hashed (what Get-TreeHashes computes for one folder). $Files = hashtable relative path -> sha256.
+function Get-Wsl2BridgeTreeHash($Files) {
+  $byRel = @{}
+  foreach ($k in $Files.Keys) {
+    $rel = ([string]$k).Replace('\', '/')
+    if ($rel.Length -eq 0 -or $rel.StartsWith('/') -or $rel.Contains('..') -or $rel.Contains(':') -or $rel.Contains("`t") -or $rel.Contains("`n") -or $byRel.ContainsKey($rel)) { throw 'wsl2_tree_hash_path' }
+    if (-not (Test-TreeHashValue $Files[$k])) { throw 'wsl2_tree_hash_value' }
+    $byRel[$rel] = $Files[$k]
+  }
+  if ($byRel.Count -eq 0) { throw 'wsl2_tree_hash_empty' }
+  $rels = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($rel in $byRel.Keys) { $rels.Add($rel) }
+  $rels.Sort([System.StringComparer]::Ordinal)
+  $builder = New-Object System.Text.StringBuilder
+  foreach ($rel in $rels) { [void]$builder.Append($rel).Append("`t").Append($byRel[$rel]).Append("`n") }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($builder.ToString()))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+}
+# The folders of the WSL2 part, each with its grants (the same shape as Get-AclPlan). $Sids.Approver is the owner (the bridge runs as that account): read on the folder (config, floor file and image inherit it:
+# no service SID and nobody else reads the floor), Modify only on the two folders the bridge itself writes.
+function Get-Wsl2AclPlan($W, $Sids) {
+  if (-not $Sids.Approver) { throw 'wsl2_owner_sid_missing' }
+  $full = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+  $o = $Sids.Approver
+  @(
+    [pscustomobject]@{ Path = $W.DataDir; Grants = @($full + @("*${o}:(OI)(CI)RX")) }
+    [pscustomobject]@{ Path = $W.StateDir; Grants = @($full + @("*${o}:(OI)(CI)M")) }
+    [pscustomobject]@{ Path = $W.DistributionsDir; Grants = @($full + @("*${o}:(OI)(CI)M")) }
+  )
+}
+# The bridge's config: exactly the 15 keys of BridgeConfig.cs, in its order. $I = the inputs (ComputerId, RepositoryId, RepositoryPath, ImageSha256, GitPath, FloorExpiresAt).
+function Get-Wsl2BridgeConfig($W, [string]$ControlPlaneSid, [string]$KeyId, [string]$Spki, $I) {
+  $c = Get-Wsl2Constants
+  [ordered]@{
+    pipeName = $c.BridgePipeName
+    controlPlaneSid = $ControlPlaneSid
+    computerId = $I.ComputerId
+    brokerKeyId = $KeyId
+    brokerSpki = $Spki
+    leaseFloorPath = $W.FloorFile
+    imagePath = $W.Image
+    imageSha256 = $I.ImageSha256
+    distributionsFolder = $W.DistributionsDir
+    stateFolder = $W.StateDir
+    gitPath = $I.GitPath
+    minWslVersion = $c.MinWslVersion
+    minKernelVersion = $c.MinKernelVersion
+    floorExpiresAt = [long]$I.FloorExpiresAt
+    repositories = @([ordered]@{ repositoryId = $I.RepositoryId; path = $I.RepositoryPath })
+  }
+}
+# Mirror of BridgeConfig.TryParse / Build (the fixed reason words are this script's own). Empty = the bridge would accept the shape; the paths, the image and the ACLs it also checks at start need the machine.
+function Test-Wsl2BridgeConfigText([string]$Json) {
+  $r = New-Object System.Collections.Generic.List[string]
+  if ((Get-ByteLength $Json) -gt 8192) { $r.Add('config_too_large'); return , @($r) }
+  try { $o = $Json | ConvertFrom-Json } catch { $r.Add('config_syntax'); return , @($r) }
+  $keys = @('pipeName', 'controlPlaneSid', 'computerId', 'brokerKeyId', 'brokerSpki', 'leaseFloorPath', 'imagePath', 'imageSha256', 'distributionsFolder', 'stateFolder', 'gitPath', 'minWslVersion', 'minKernelVersion', 'floorExpiresAt', 'repositories')
+  if ($o -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $o $keys)) { $r.Add('config_keys'); return , @($r) }
+  $strings = @('pipeName', 'controlPlaneSid', 'computerId', 'brokerKeyId', 'brokerSpki', 'leaseFloorPath', 'imagePath', 'imageSha256', 'distributionsFolder', 'stateFolder', 'gitPath', 'minWslVersion', 'minKernelVersion')
+  if (@($strings | Where-Object { $o.$_ -isnot [string] }).Count -gt 0) { $r.Add('config_keys'); return , @($r) }
+  if (-not (Test-PlainPipeName $o.pipeName)) { $r.Add('pipe_name') }
+  if (-not ((Test-AccountSidShape $o.controlPlaneSid) -or (Test-ServiceSidShape $o.controlPlaneSid))) { $r.Add('control_plane_sid') }
+  if (-not (Test-HostId $o.computerId)) { $r.Add('computer_id') }
+  if (-not (Test-HostId $o.brokerKeyId) -or -not (Test-P256Spki $o.brokerSpki)) { $r.Add('broker_key') }
+  if (-not (Test-PlainAbsolutePath $o.leaseFloorPath)) { $r.Add('lease_floor_path') }
+  if (-not (Test-PlainAbsolutePath $o.imagePath)) { $r.Add('image') }
+  if (-not (Test-TreeHashValue $o.imageSha256)) { $r.Add('image_hash_format') }
+  if (-not (Test-PlainAbsolutePath $o.distributionsFolder) -or -not (Test-PlainAbsolutePath $o.stateFolder)) { $r.Add('folder') }
+  if (-not (Test-PlainAbsolutePath $o.gitPath)) { $r.Add('git_path') }
+  $v = $null
+  if (-not ([version]::TryParse($o.minWslVersion, [ref]$v) -and [version]::TryParse($o.minKernelVersion, [ref]$v) -and ($o.floorExpiresAt -is [int] -or $o.floorExpiresAt -is [long]) -and $o.floorExpiresAt -ge 1)) { $r.Add('floor') }
+  $repos = @($o.repositories)
+  $reposOk = ($o.repositories -is [System.Array]) -and ($repos.Count -ge 1) -and ($repos.Count -le 8)
+  if ($reposOk) {
+    foreach ($e in $repos) { if ($e -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $e @('repositoryId', 'path')) -or -not (Test-HostId $e.repositoryId) -or -not (Test-PlainAbsolutePath $e.path)) { $reposOk = $false } }
+    if ($reposOk -and ((@($repos | ForEach-Object { $_.repositoryId } | Sort-Object -Unique).Count -ne $repos.Count) -or (@($repos | ForEach-Object { $_.path } | Sort-Object -Unique).Count -ne $repos.Count))) { $reposOk = $false }
+  }
+  if (-not $reposOk) { $r.Add('repositories') }
+  , @($r)
+}
+# The lease floor file (LeaseFloor.cs): one number in ASCII, line ends after it. $Generation is the Broker config's `generation`: a lease the Broker signs at generation N is accepted at floor N.
+function Get-Wsl2LeaseFloorText([long]$Generation) {
+  if ($Generation -lt 1) { throw 'wsl2_generation_invalid' }
+  [string]$Generation + "`r`n"
+}
+function Read-Wsl2LeaseFloor([string]$Text) {
+  if ($null -eq $Text -or $Text.Length -eq 0 -or $Text.Length -gt 32) { return $null }
+  $t = $Text.TrimEnd("`r", "`n")
+  if ($t -cnotmatch '^[0-9]{1,16}$') { return $null }
+  $n = [long]$t
+  if ($n -lt 1) { return $null }
+  $n
+}
+# The three places that hold the Broker's attestation public half, plus the live key, the floor file and the computer names, read back. Every argument is a TEXT the caller read from disk (or the key's own SPKI).
+# $Expect = { KeyName; KeyId; ComputerId; RepositoryId }. Returns the reason words (empty = all agree). A text that cannot be read is its own word, never a pass.
+# $StrictFloor (install): the floor must EQUAL the Broker generation. Status is not strict: a revocation raises the floor first, so a higher floor for a moment is how it is done; status says so in words.
+# $Expect may also carry ControlPlaneSid, PipeName, Git and ImageSha256: the bridge config is then compared with them too.
+function Test-Wsl2KeyAgreement($Expect, [string]$LiveSpki, [string]$BrokerJson, [string]$AuthorityJson, [string]$BridgeJson, [string]$FloorText, [bool]$StrictFloor = $false) {
+  $r = New-Object System.Collections.Generic.List[string]
+  if (-not (Test-P256Spki $LiveSpki)) { $r.Add('live_key_spki') }
+  $read = { param($text) try { $text | ConvertFrom-Json } catch { $null } }
+  $broker = & $read $BrokerJson; $authority = & $read $AuthorityJson; $bridge = & $read $BridgeJson
+  if ($null -eq $broker) { $r.Add('broker_config_unreadable') }
+  else {
+    $a = $broker.PSObject.Properties['attestation']
+    if ($null -eq $a -or -not (Test-AttestationConfig $a.Value)) { $r.Add('broker_attestation') }
+    elseif ($a.Value.keyName -cne $Expect.KeyName -or $a.Value.keyId -cne $Expect.KeyId) { $r.Add('broker_attestation_differs') }
+    $wsl = @(@($broker.computers) | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['kind'] -and $_.kind -ceq 'wsl2' })
+    if ($wsl.Count -ne 1 -or $wsl[0].computerId -cne $Expect.ComputerId) { $r.Add('broker_wsl2_computer') }
+  }
+  if ($null -eq $authority) { $r.Add('authority_config_unreadable') }
+  else {
+    if ($null -eq $authority.PSObject.Properties['attestationKeyId'] -or $authority.attestationKeyId -cne $Expect.KeyId) { $r.Add('authority_key_id') }
+    if ($null -eq $authority.PSObject.Properties['attestationPublicKey'] -or $authority.attestationPublicKey -cne $LiveSpki) { $r.Add('authority_spki') }
+  }
+  if ($null -eq $bridge) { $r.Add('bridge_config_unreadable') }
+  else {
+    if ($bridge.brokerKeyId -cne $Expect.KeyId) { $r.Add('bridge_key_id') }
+    if ($bridge.brokerSpki -cne $LiveSpki) { $r.Add('bridge_spki') }
+    if ($bridge.computerId -cne $Expect.ComputerId) { $r.Add('bridge_computer_id') }
+    if (@(@($bridge.repositories) | Where-Object { $_.repositoryId -ceq $Expect.RepositoryId }).Count -ne 1) { $r.Add('bridge_repository') }
+    $has = { param($n) $null -ne $Expect.PSObject.Properties[$n] -and -not [string]::IsNullOrEmpty([string]$Expect.$n) }
+    if ((& $has 'ControlPlaneSid') -and $bridge.controlPlaneSid -cne $Expect.ControlPlaneSid) { $r.Add('bridge_control_plane_sid') }
+    if ((& $has 'PipeName') -and $bridge.pipeName -cne $Expect.PipeName) { $r.Add('bridge_pipe_name') }
+    if ((& $has 'Git') -and $bridge.gitPath -cne $Expect.Git) { $r.Add('bridge_git_path') }
+    if ((& $has 'ImageSha256') -and $bridge.imageSha256 -cne $Expect.ImageSha256) { $r.Add('bridge_image_sha256') }
+  }
+  $floor = Read-Wsl2LeaseFloor $FloorText
+  if ($null -eq $floor) { $r.Add('floor_unreadable') }
+  elseif ($null -ne $broker -and ($broker.generation -is [int] -or $broker.generation -is [long]) -and $floor -gt [long]$broker.generation) { $r.Add('floor_above_generation') }
+  elseif ($StrictFloor -and $null -ne $broker -and ($broker.generation -is [int] -or $broker.generation -is [long]) -and $floor -ne [long]$broker.generation) { $r.Add('floor_below_generation') }   # a floor above the Broker's generation refuses every lease the Broker signs
+  , @($r)
+}
+# Who may read the lease floor file (ADR-012: Phase 5 required): SYSTEM, Administrators and the owner, nobody else. $AllowSids = the allow ACEs read back from the file.
+function Test-Wsl2FloorAcl($AllowSids, [string]$OwnerSid) {
+  $r = New-Object System.Collections.Generic.List[string]
+  foreach ($sid in @($AllowSids)) { if (@('S-1-5-18', 'S-1-5-32-544', $OwnerSid) -cnotcontains $sid) { $r.Add('floor_acl:' + $sid) } }
+  , @($r)
+}
+# The settings text (control-plane-config\albera.approval.json) against what -AddWsl2Computer intends: the wsl2 computer, the wsl2 block and the desktop block it needs. Empty = as intended.
+# $Expect = { ComputerId; RepositoryId; PipeName; ServerSid; Git }.
+function Test-Wsl2SettingsText([string]$Json, $Expect) {
+  $r = New-Object System.Collections.Generic.List[string]
+  try { $o = $Json | ConvertFrom-Json } catch { $r.Add('settings_syntax'); return , @($r) }
+  if ($o -isnot [System.Management.Automation.PSCustomObject]) { $r.Add('settings_syntax'); return , @($r) }   # an empty or missing text parses to nothing
+  $computer = if ($null -ne $o.computers -and $null -ne $o.computers.PSObject.Properties[$Expect.ComputerId]) { $o.computers.($Expect.ComputerId) } else { $null }
+  if ($computer -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $computer @('computerId', 'isolation', 'repositoryId')) -or $computer.computerId -cne $Expect.ComputerId -or $computer.isolation -cne 'wsl2' -or $computer.repositoryId -cne $Expect.RepositoryId) { $r.Add('settings_wsl2_computer') }
+  $block = $o.PSObject.Properties['wsl2']
+  if ($null -eq $block -or $block.Value -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $block.Value @('pipeName', 'serverSid', 'git'))) { $r.Add('settings_wsl2_block') }
+  elseif ($block.Value.pipeName -cne $Expect.PipeName -or $block.Value.serverSid -cne $Expect.ServerSid -or $block.Value.git -cne $Expect.Git) { $r.Add('settings_wsl2_block_differs') }
+  if ($null -eq $o.PSObject.Properties['desktop']) { $r.Add('settings_desktop') }
+  , @($r)
+}
+# The bridge runs in the owner's session, started at sign-in from HKLM Run like the approver tray. Its own config is the one argument.
+function Get-Wsl2RunEntry($W) {
+  $c = Get-HostConstants; $w2 = Get-Wsl2Constants
+  [pscustomobject]@{ KeyPath = $c.RunKeyPath; Name = $w2.RunValueName; Command = ('"' + $W.BridgeExe + '" serve "' + $W.Config + '"') }
+}
+# The record `created.wsl2` of the install manifest (a Dictionary). Names a fixed key, a fixed Run value and hashes: a forged record cannot make uninstall delete another key or value.
+function Test-Wsl2Record($Record) {
+  $c = Get-Wsl2Constants
+  if ($Record -isnot [System.Collections.IDictionary]) { return $false }
+  $allowed = @('computerId', 'repositoryId', 'keyName', 'keyId', 'gitPath', 'bridgeTreeSha256', 'bridgeExeSha256', 'imageSha256', 'floorGeneration', 'runEntry', 'firstStart')
+  foreach ($k in @($Record.Keys)) { if ($allowed -cnotcontains $k) { return $false } }
+  foreach ($k in @('computerId', 'repositoryId', 'keyName', 'keyId')) { if (-not (Test-HasKey $Record $k)) { return $false } }
+  if (-not (Test-HostId $Record['computerId']) -or -not (Test-HostId $Record['repositoryId']) -or $Record['keyName'] -cne $c.AttestationKeyName -or $Record['keyId'] -cne $c.AttestationKeyId) { return $false }
+  foreach ($k in @('bridgeTreeSha256', 'bridgeExeSha256', 'imageSha256')) { if ((Test-HasKey $Record $k) -and -not (Test-TreeHashValue $Record[$k])) { return $false } }
+  if ((Test-HasKey $Record 'gitPath') -and -not (Test-Wsl2GitPath $Record['gitPath'])) { return $false }
+  if ((Test-HasKey $Record 'floorGeneration') -and ($Record['floorGeneration'] -isnot [int] -and $Record['floorGeneration'] -isnot [long])) { return $false }
+  if (Test-HasKey $Record 'firstStart') {
+    $f = $Record['firstStart']
+    if ($f -isnot [System.Collections.IDictionary] -or @($f.Keys).Count -ne 2 -or $f['word'] -cne $c.FirstStartWord -or $f['at'] -isnot [string] -or $f['at'] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') { return $false }
+  }
+  if (Test-HasKey $Record 'runEntry') {
+    $e = $Record['runEntry']
+    if ($e -isnot [System.Collections.IDictionary] -or @($e.Keys).Count -ne 2 -or $e['name'] -cne $c.RunValueName -or $e['command'] -isnot [string] -or $e['command'].Length -gt 400) { return $false }
+  }
+  $true
+}
+
+# ---------------------------------------------------------------------------------------------- one method for every elevated recursive delete of a folder an unprivileged account could write into
+# (the lab folder, the measurement's work folders, the bridge's state and distributions folders). An administrator deleting a tree that the owner's account has filled can be steered by that account: a link put
+# in place between the listing and the delete, a file whose ACL denies the administrator. So: the TOP folder must be owned by Administrators (made by this script, not planted); and at EVERY level the owner
+# and the DACL are set to Administrators + SYSTEM only BEFORE the level is listed, and the level is checked for a link again after that. A link is removed as a link, never entered.
+function Get-AdminTreeOwner([string]$Path) {
+  $acl = if ([System.IO.Directory]::Exists($Path)) { [System.IO.Directory]::GetAccessControl($Path) } else { [System.IO.File]::GetAccessControl($Path) }
+  $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+}
+function Set-AdminOnlyAcl([string]$Path) {
+  $ba = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); $sy = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+  $isDir = [System.IO.Directory]::Exists($Path)
+  $security = if ($isDir) { New-Object System.Security.AccessControl.DirectorySecurity } else { New-Object System.Security.AccessControl.FileSecurity }
+  $security.SetAccessRuleProtection($true, $false)
+  $security.SetOwner($ba)
+  $inherit = if ($isDir) { [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' } else { [System.Security.AccessControl.InheritanceFlags]::None }
+  foreach ($sid in @($sy, $ba)) { $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow))) }
+  if ($isDir) { [System.IO.Directory]::SetAccessControl($Path, $security) } else { [System.IO.File]::SetAccessControl($Path, $security) }
+}
+function Remove-AdminOnlyLevel([string]$Dir) {
+  Set-AdminOnlyAcl $Dir
+  $info = New-Object System.IO.DirectoryInfo($Dir)
+  if (($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Dir turned into a link while it was being deleted; left alone" }   # checked again AFTER the ACL was taken
+  foreach ($entry in $info.GetFileSystemInfos()) {
+    $isLink = ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    $isDir = ($entry.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+    if ($isLink) { $entry.Delete(); continue }   # a link goes as a link: its target is neither entered nor touched
+    if ($isDir) { Remove-AdminOnlyLevel $entry.FullName; continue }
+    # no ACL write on a FILE: an ACL follows a hard link to a file outside the tree, and the parent's DACL (just taken) already lets administrators delete what is in it
+    if (($entry.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { $entry.Attributes = [System.IO.FileAttributes]::Normal }
+    $entry.Delete()
+  }
+  if (($info.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { $info.Attributes = [System.IO.FileAttributes]::Directory }
+  $info.Delete()
+}
+# $true when the folder was there and is gone; $false when it was not there. Throws for a link on the path, a top folder not owned by Administrators, and whatever stops a delete (an open file).
+function Remove-AdminOnlyTree([string]$Path, [string[]]$AllowOwners = @()) {   # $AllowOwners: besides Administrators, the SID of an account WE made (the lab account's profile folder)
+  if (-not [System.IO.Directory]::Exists($Path)) { return $false }
+  if ((Get-ReparseChain $Path).Count -gt 0) { throw "$Path is or is reached through a link; left alone" }
+  $owner = Get-AdminTreeOwner $Path
+  if (@('S-1-5-32-544') + @($AllowOwners) -cnotcontains $owner) { throw "$Path is not owned by Administrators (owner $owner): it was not made by this script; left alone" }
+  Remove-AdminOnlyLevel $Path
+  $true
+}
+
+# ---------------------------------------------------------------------------------------------- the gate of -Mode wsl2-run-entry: what the C6 report and the SEC-2 result must say
+function Get-MeasurePaths([string]$ProgramData) {
+  $dir = Join-Path $ProgramData 'AlberaMeasure'
+  [pscustomobject]@{ Dir = $dir; N7 = (Join-Path $dir 'attestation-key-report-N7.json'); C6 = (Join-Path $dir 'attestation-key-report-C6.json'); Sec2 = (Join-Path $dir 'sec2-result.json') }
+}
+# $C6 / $Sec2 = the parsed json (or $null when the file is not there). $FirstStartAt = the time the first start was recorded: both results must be LATER (ISO UTC strings, compared as text), so a result left from
+# before a reinstall cannot pass. Returns the reasons the Run entry must wait (empty = go). Required and never waived: C6 broker and controlplane measured, the key not exportable (measured), SEC-2 ownerCheck measured.
+# Not required: asExpected_other (a NO there is still a finding), and the image pin (it is optional: a pin that fails, or was not measured, means it is left out).
+function Test-Wsl2Gate($C6, $Sec2, [string]$FirstStartAt) {
+  $r = New-Object System.Collections.Generic.List[string]
+  $later = { param($t) ($t -is [string]) -and ($t -cmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') -and [string]::CompareOrdinal($t, $FirstStartAt) -gt 0 }
+  if ($null -eq $C6) { $r.Add('c6_report_missing') }
+  else {
+    if ($C6.phase -cne 'C6') { $r.Add('c6_report_not_phase_c6') }
+    if ($C6.failed -ne $false) { $r.Add('c6_failed') }
+    if (-not (& $later $C6.measuredAt)) { $r.Add('c6_report_not_after_first_start') }
+    $v = $C6.verdicts
+    foreach ($name in @('asExpected_broker', 'asExpected_controlplane')) {
+      $value = if ($null -ne $v -and $null -ne $v.PSObject.Properties[$name]) { $v.$name } else { $null }
+      if ($null -eq $value) { $r.Add('c6_missing:' + $name) } elseif ($value -ceq 'NO') { $r.Add('c6_unexpected:' + $name) } elseif ($value -ceq 'not_measured') { $r.Add('c6_not_measured:' + $name) } elseif ($value -cne 'yes') { $r.Add('c6_odd_value:' + $name) }
+    }
+    if ($null -ne $v -and $null -ne $v.PSObject.Properties['asExpected_other'] -and $v.asExpected_other -ceq 'NO') { $r.Add('c6_unexpected:asExpected_other') }
+    $export = if ($null -ne $v) { $v.keyCannotBeExported } else { $null }
+    if ($export -ceq 'no') { $r.Add('c6_key_can_be_exported') } elseif ($export -cne 'yes') { $r.Add('c6_export_not_shown') }
+  }
+  if ($null -eq $Sec2) { $r.Add('sec2_result_missing') }
+  else {
+    if (-not (& $later $Sec2.at)) { $r.Add('sec2_result_not_after_first_start') }
+    if ($Sec2.ownerCheck -cne 'works') { if ($Sec2.ownerCheck -ceq 'not_measured') { $r.Add('sec2_owner_check_not_measured') } else { $r.Add('sec2_owner_check:' + $Sec2.ownerCheck) } }
+    if ($Sec2.imagePin -cne 'works' -and $Sec2.imagePin -cne 'not_measured' -and [string]$Sec2.imagePin -cnotlike 'fails_*') { $r.Add('sec2_image_pin_odd:' + $Sec2.imagePin) }
+  }
+  , @($r)
 }
