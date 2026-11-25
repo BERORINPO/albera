@@ -205,8 +205,10 @@ switch ($Case) {
     function New-Junction([string]$Link, [string]$Target) { $null = & cmd.exe /c mklink /J ('"' + $Link + '"') ('"' + $Target + '"') }
     $realOwner = ${function:Get-AdminTreeOwner}
     $realAcl = ${function:Set-AdminOnlyAcl}
-    # a folder the (non-administrator) test user made: its owner is not Administrators, so the REAL owner check refuses it and nothing is deleted
+    # a folder owned by the test user itself, not by Administrators, so the REAL owner check refuses it and nothing is deleted.
+    # The owner is set explicitly: an elevated runner (CI) would otherwise make the folder owned by Administrators.
     $planted = Join-Path $Work 'planted'; New-Item -ItemType Directory -Force -Path $planted | Out-Null
+    $plantedAcl = [System.IO.Directory]::GetAccessControl($planted); $plantedAcl.SetOwner([System.Security.Principal.WindowsIdentity]::GetCurrent().User); [System.IO.Directory]::SetAccessControl($planted, $plantedAcl)
     [System.IO.File]::WriteAllText((Join-Path $planted 'f.txt'), 'x')
     $msg = Try-Run { Remove-AdminOnlyTree $planted }
     $r.planted = [ordered]@{ message = $msg; stillThere = [System.IO.File]::Exists((Join-Path $planted 'f.txt')) }

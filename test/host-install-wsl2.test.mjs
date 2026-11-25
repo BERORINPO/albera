@@ -68,14 +68,14 @@ const lib = (t) => {
   return { keys, r: out };
 };
 
-test('Test-ComputersList accepts kind wsl2 the way ServiceConfig.cs reads it, and nothing else', (t) => {
+test('Test-ComputersList accepts kind wsl2 the way ServiceConfig.cs reads it, and nothing else', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const c = r.computers;
   for (const accepted of ['vmOnly', 'wsl2Only', 'mixed', 'empty', 'eight']) assert.equal(c[accepted], true, accepted);
   for (const refused of ['wsl2WithVm', 'otherKind', 'kindUppercase', 'sameIdTwoKinds', 'sameIdTwice', 'badId', 'extraKey', 'nine', 'notArray', 'stringValue']) assert.equal(c[refused], false, refused);
 });
 
-test('the Broker config: the wsl2 computer and the attestation key are added, the plain config is unchanged, and the one-VM check ignores the wsl2 entry', (t) => {
+test('the Broker config: the wsl2 computer and the attestation key are added, the plain config is unchanged, and the one-VM check ignores the wsl2 entry', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const b = r.broker;
   assert.deepEqual(b.plainKeys, ['pipeName', 'database', 'authorityKeys', 'controlPlaneSid', 'generation', 'leaseId', 'policyVersion']);
@@ -92,7 +92,7 @@ test('the Broker config: the wsl2 computer and the attestation key are added, th
   assert.deepEqual(reasons(b.badKind), ['computers']);
 });
 
-test('the Authority config pins the key (both fields or neither), and a rebuild of the config for set-approver keeps the pin', (t) => {
+test('the Authority config pins the key (both fields or neither), and a rebuild of the config for set-approver keeps the pin', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { keys, r } = lib(t);
   const a = r.authority;
   assert.equal(a.attKeys.filter((key) => key.startsWith('attestation')).length, 2);
@@ -109,7 +109,7 @@ test('the Authority config pins the key (both fields or neither), and a rebuild 
   assert.equal(a.rebuiltEqualsOriginal, true, 'the config set-approver writes is the one it read, pin included');
 });
 
-test('the approval settings with the wsl2 block are accepted by the room\'s own parser, and refused by it where the installer says they are wrong', (t) => {
+test('the approval settings with the wsl2 block are accepted by the room\'s own parser, and refused by it where the installer says they are wrong', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const s = r.settings;
   assert.deepEqual(s.plainKeys, ['version', 'projectId', 'broker', 'authority', 'journal', 'computers']);
@@ -132,7 +132,7 @@ test('the approval settings with the wsl2 block are accepted by the room\'s own 
   assert.deepEqual(reasons(s.noDesktop), ['settings_desktop']);
 });
 
-test('the bridge config has exactly the fifteen keys of BridgeConfig.cs and every wrong value gets its own fixed word', (t) => {
+test('the bridge config has exactly the fifteen keys of BridgeConfig.cs and every wrong value gets its own fixed word', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const b = r.bridge;
   assert.deepEqual(b.keys, ['pipeName', 'controlPlaneSid', 'computerId', 'brokerKeyId', 'brokerSpki', 'leaseFloorPath', 'imagePath', 'imageSha256', 'distributionsFolder', 'stateFolder', 'gitPath', 'minWslVersion', 'minKernelVersion', 'floorExpiresAt', 'repositories']);
@@ -149,7 +149,7 @@ test('the bridge config has exactly the fifteen keys of BridgeConfig.cs and ever
   for (const [name, word] of Object.entries(expected)) assert.deepEqual(reasons(b[name]), [word], name);
 });
 
-test('the inputs: each wrong value is named, and the floor must be in the future', (t) => {
+test('the inputs: each wrong value is named, and the floor must be in the future', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const i = r.inputs;
   assert.deepEqual(reasons(i.good), []);
@@ -158,7 +158,7 @@ test('the inputs: each wrong value is named, and the floor must be in the future
   assert.deepEqual(reasons(i.gitLowercase), [], 'Windows paths compare without case');
 });
 
-test('the bridge tree hash, the floor file, the Run entry and the ACL plan', (t) => {
+test('the bridge tree hash, the floor file, the Run entry and the ACL plan', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const files = { 'albera-wsl-bridge.exe': H, 'sub/data.json': 'f'.repeat(64), 'a.dll': '1'.repeat(64) };
   const text = Object.keys(files).sort().map((rel) => `${rel}\t${files[rel]}\n`).join('');
@@ -180,7 +180,7 @@ test('the bridge tree hash, the floor file, the Run entry and the ACL plan', (t)
   assert.equal(/S-1-5-80/u.test(sids), false, 'no service SID (Broker, Authority, Control Plane) has a rule on the bridge folders');
 });
 
-test('the install record and the manifest shape know the WSL2 part and refuse a forged one', (t) => {
+test('the install record and the manifest shape know the WSL2 part and refuse a forged one', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const rec = r.record;
   assert.equal(rec.minimal, true);
@@ -191,7 +191,7 @@ test('the install record and the manifest shape know the WSL2 part and refuse a 
   assert.deepEqual(reasons(r.manifest.badSpki), ['attestation_spki']);
 });
 
-test('the agreement check reads the key and its three copies back and names every disagreement', (t) => {
+test('the agreement check reads the key and its three copies back and names every disagreement', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const a = r.agreement;
   assert.deepEqual(reasons(a.allAgree), []);
@@ -212,7 +212,7 @@ const harness = (t, kind, extra = []) => {
   return { keys, work, r: lastJson(ps(['-File', path.join(driverDir, 'wsl2-harness.ps1'), '-Case', kind, '-Work', work, '-Spki', keys.a, '-OtherSpki', keys.b, '-Rsa', keys.rsa, ...extra]).stdout) };
 };
 
-test('the WSL2 steps sit after the steps they depend on, and appear only with the option (install) or the record (uninstall); the Run entry is NOT an install step', (t) => {
+test('the WSL2 steps sit after the steps they depend on, and appear only with the option (install) or the record (uninstall); the Run entry is NOT an install step', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = harness(t, 'steps');
   const plain = ['sources', 'approver', 'dataroot', 'services', 'folders', 'binaries', 'key', 'node', 'claude', 'configs', 'cpservice', 'shortcuts', 'finish'];
   assert.deepEqual(r.installPlain, plain, 'without the option the install is the install it was');
@@ -224,7 +224,7 @@ test('the WSL2 steps sit after the steps they depend on, and appear only with th
   assert.ok(r.wslDataDir.endsWith('\\wsl-bridge'));
 });
 
-test('the inputs of a step come from the options, and status and uninstall (no options) fall back to the install record', (t) => {
+test('the inputs of a step come from the options, and status and uninstall (no options) fall back to the install record', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = harness(t, 'inputs');
   assert.equal(r.fromOptions.ComputerId, 'wsl-07');
   assert.equal(r.fromOptions.RepositoryId, 'repo-x');
@@ -238,7 +238,7 @@ test('the inputs of a step come from the options, and status and uninstall (no o
   assert.equal(r.floorNotNumber, 0, 'a floor that is not a number is zero, which the input check refuses');
 });
 
-test('install, with fakes: the key is refused when it exists, the configs carry its public half, the files are made, NO program is started, the copies must agree (floor equal to the generation, readable by three accounts only), and the Run entry is a later, separate step', (t) => {
+test('install, with fakes: the key is refused when it exists, the configs carry its public half, the files are made, NO program is started, the copies must agree (floor equal to the generation, readable by three accounts only), and the Run entry is a later, separate step', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { keys, r } = harness(t, 'install');
   // the key step
   assert.equal(r.keyStepBlockedWhenForeignKeyExists.startsWith('blocked:'), true);
@@ -333,7 +333,7 @@ test('install, with fakes: the key is refused when it exists, the configs carry 
   assert.equal(r.statusWithoutRecord, 0);
 });
 
-test('uninstall, with fakes: the Run value goes first and only if it is the command install wrote, the key is deleted, state and distributions go through the one delete method (owner and ACL taken level by level, before listing), and a locked lab folder next to the data folder does not stop it', (t) => {
+test('uninstall, with fakes: the Run value goes first and only if it is the command install wrote, the key is deleted, state and distributions go through the one delete method (owner and ACL taken level by level, before listing), and a locked lab folder next to the data folder does not stop it', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = harness(t, 'uninstall');
   assert.equal(r.runStepBefore, 'todo');
   assert.equal(r.runValueAfter, null);
@@ -358,7 +358,7 @@ test('uninstall, with fakes: the Run value goes first and only if it is the comm
   assert.equal(r.dataStepWithLockedLab, null);
 });
 
-test('-Mode wsl2-hashes prints the tree hash of the bridge publish folder, the same one the install checks the copy against', (t) => {
+test('-Mode wsl2-hashes prints the tree hash of the bridge publish folder, the same one the install checks the copy against', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const work = scratch(t);
   const publish = path.join(work, 'src', 'runtime', 'windows-wsl-bridge', 'bin', 'Release', 'net10.0-windows', 'win-x64', 'publish');
   mkdirSync(path.join(publish, 'sub'), { recursive: true });
@@ -373,7 +373,7 @@ test('-Mode wsl2-hashes prints the tree hash of the bridge publish folder, the s
   assert.match(missing.stdout, /bridge publish folder is missing/u);
 });
 
-test('the real script: the WSL2 options are refused without -AddWsl2Computer and outside install, and the plan lists the steps, blocked with the reasons, changing nothing', () => {
+test('the real script: the WSL2 options are refused without -AddWsl2Computer and outside install, and the plan lists the steps, blocked with the reasons, changing nothing', { skip: !windows && 'Windows PowerShell only' }, () => {
   const host = (args) => ps(['-File', path.join(hostDir, 'albera-host.ps1'), ...args], { allowFail: true });
   const alone = host(['-Mode', 'plan', '-Wsl2Image', 'C:\\x.tar']);
   assert.equal(alone.code, 2);
@@ -397,13 +397,13 @@ test('the real script: the WSL2 options are refused without -AddWsl2Computer and
   assert.match(plan.stdout, /wsl2_repository_id.*wsl2_floor_expires_at/u, 'the blocked reasons are named');
   assert.match(plan.stdout, /PLAN ONLY: nothing was changed/u);
   const withoutOption = host(['-Mode', 'plan']);
-  assert.equal(/WSL2|wsl2/u.test(withoutOption.stdout), false, 'without the option the plan does not mention it');
+  assert.equal(/WSL2|wsl2/u.test(withoutOption.stdout.split(root).join('')), false, 'without the option the plan does not mention it (the repository path itself is left out of the check)');
 });
 
 // ---------------------------------------------------------------------------------------------- the two lab scripts, with fakes
 const lab = (t, kind) => lastJson(ps(['-File', path.join(driverDir, 'wsl2-lab-harness.ps1'), '-Case', kind, '-Work', scratch(t)]).stdout);
 
-test('measure-attestation-key.ps1: names, identities, error names, the task XML and the answers; a task that did not run is never an answer; the report holds no key material', (t) => {
+test('measure-attestation-key.ps1: names, identities, error names, the task XML and the answers; a task that did not run is never an answer; the report holds no key material', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const r = lab(t, 'measure-pure');
   assert.match(r.keyName, /^AlberaMeasure-[0-9a-f]{12}$/u);
   assert.equal(r.shortRandomThrows, 'random_too_short');
@@ -437,7 +437,7 @@ test('measure-attestation-key.ps1: names, identities, error names, the task XML 
   assert.ok(r.planLines.length >= 6);
 });
 
-test('measure-attestation-key.ps1, with fakes: N7 runs every step in order and cleans up; C6 reads the installed key (export policy read, no export tried) and creates and deletes NOTHING; a failure still writes the report; a leftover is removed by name and the real key never', (t) => {
+test('measure-attestation-key.ps1, with fakes: N7 runs every step in order and cleans up; C6 reads the installed key (export policy read, no export tried) and creates and deletes NOTHING; a failure still writes the report; a leftover is removed by name and the real key never', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const r = lab(t, 'measure-flow');
   assert.deepEqual(r.normal.order, ['dir', 'dir', 'dir', 'create-name-nonadmin', 'create-key', 'export-sign', 'task:broker', 'task:other', 'task:controlplane', 'delete-key']);
   assert.equal(r.normalTryExport, true, 'N7 tries an export on its own throwaway key');
@@ -483,7 +483,7 @@ test('measure-attestation-key.ps1, with fakes: N7 runs every step in order and c
   assert.equal(r.taskThatCannotStart.ranAsAnother, 'not_measured', 'a task that ran as another account is not a measurement');
 });
 
-test('both lab scripts print their plan with -DryRun and change nothing (no admin needed)', (t) => {
+test('both lab scripts print their plan with -DryRun and change nothing (no admin needed)', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const work = scratch(t);
   const report = path.join(work, 'report', 'r.json');
   const measure = ps(['-File', newScripts[0], '-DryRun', '-ReportPath', report]);
@@ -496,7 +496,7 @@ test('both lab scripts print their plan with -DryRun and change nothing (no admi
   assert.ok(stepLines(sec2.stdout).length >= 6);
 });
 
-test('lab-sec2.ps1: names, ownership of an account, the three cases, the answers in words, and a probe that is only a start frame', (t) => {
+test('lab-sec2.ps1: names, ownership of an account, the three cases, the answers in words, and a probe that is only a start frame', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const r = lab(t, 'sec2-pure');
   assert.match(r.accountName, /^albera-sec2-[0-9a-f]{8}$/u);
   assert.ok(r.accountName.length <= 20, 'a local account name is at most 20 characters');
@@ -522,7 +522,7 @@ test('lab-sec2.ps1: names, ownership of an account, the three cases, the answers
   assert.equal(r.probe.usesHelperArgument, 'wsl-bridge');
 });
 
-test('lab-sec2.ps1, with fakes: the account AND the lab folder are removed on EVERY way out, the result file is written, a lock is reported and finished by -RemoveStale, a real run or a bad path stops it before anything is made, and the last words say what is really left', (t) => {
+test('lab-sec2.ps1, with fakes: the account AND the lab folder are removed on EVERY way out, the result file is written, a lock is reported and finished by -RemoveStale, a real run or a bad path stops it before anything is made, and the last words say what is really left', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const r = lab(t, 'sec2-flow');
   assert.deepEqual(r.normal.order, ['sweep', 'remove-lab', 'create-account', 'lab-folder', 'wait-pipe', 'probe:owner', 'probe:wrongOwner', 'probe:ownerAndImage', 'write-result', 'wait-pipe-gone', 'remove-account', 'remove-lab']);
   assert.deepEqual(r.normalResult, ['works'], 'the result the Run entry step reads is written');
@@ -573,7 +573,7 @@ test('lab-sec2.ps1, with fakes: the account AND the lab folder are removed on EV
   assert.equal(r.notOurs.threw, true);
 });
 
-test('round 2 (lib): the floor must equal the generation at install, the bridge fields are compared, the floor file has three readers, the first start is a record, git is the real git.exe', (t) => {
+test('round 2 (lib): the floor must equal the generation at install, the bridge fields are compared, the floor file has three readers, the first start is a record, git is the real git.exe', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const a = r.agreement2;
   assert.deepEqual(reasons(a.fullAgree), []);
@@ -619,7 +619,7 @@ test('H1: no unreviewed local build starts elevated, the first start and the Run
   assert.match(doc, /the image cannot be built in CI/u, 'the doc says what is trusted about the image');
 });
 
-test('the new modes: -Mode wsl2-first-start and wsl2-run-entry refuse without an elevated console, and the first-start word is required', () => {
+test('the new modes: -Mode wsl2-first-start and wsl2-run-entry refuse without an elevated console, and the first-start word is required', { skip: !windows && 'Windows PowerShell only' }, () => {
   const refuse = (mode, extra) => ps(['-File', path.join(hostDir, 'albera-host.ps1'), '-Mode', mode, ...extra], { allowFail: true, env: { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' } });
   const noWord = refuse('wsl2-first-start', []);
   assert.notEqual(noWord.code, 0);
@@ -634,7 +634,7 @@ test('the new modes: -Mode wsl2-first-start and wsl2-run-entry refuse without an
   }
 });
 
-test('the one delete method for every elevated recursive delete: a folder not owned by Administrators is refused, a link is removed as a link and never entered, owner and ACL are taken at every level before it is listed', (t) => {
+test('the one delete method for every elevated recursive delete: a folder not owned by Administrators is refused, a link is removed as a link and never entered, owner and ACL are taken at every level before it is listed', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const r = lab(t, 'admintree');
   assert.match(r.planted.message, /is not owned by Administrators/u, 'the REAL owner check refuses a folder the unprivileged test user made');
   assert.equal(r.planted.stillThere, true, 'and deletes nothing of it');
@@ -657,7 +657,7 @@ test('the one delete method for every elevated recursive delete: a folder not ow
   }
 });
 
-test('the Run entry gate: -Mode wsl2-run-entry needs a complete install, a C6 report and a SEC-2 result NEWER than the first start, nothing is waived, and the record is written BEFORE the Run value', (t) => {
+test('the Run entry gate: -Mode wsl2-run-entry needs a complete install, a C6 report and a SEC-2 result NEWER than the first start, nothing is waived, and the record is written BEFORE the Run value', { skip: !windows && 'Windows PowerShell only' }, (t) => {
   const { r } = lib(t);
   const g = r.gate;
   assert.deepEqual(reasons(g.good), []);
