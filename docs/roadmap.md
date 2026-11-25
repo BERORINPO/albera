@@ -4,7 +4,7 @@
 
 Documents written before 2026-11-12 describe the old plan and are historical.
 
-No new pull requests to the frozen runtime until D2 is reopened (review 2026-12-31).
+No new pull requests to the frozen runtime until D2 is reopened (review 2026-12-31). Exceptions: the smallest fix that keeps CI green, and security fixes.
 
 ## Where the work is now
 
@@ -41,7 +41,7 @@ Done means **proof on real machines, not documents**: the tool is used for real 
 | D6 | Which tools to retire | Decided in S3. |
 | D7 | Give it to other people | Not now. Revisit after S3. |
 
-The same decisions are in `spec/architecture.md` section 4 (one line per decision).
+D1, D2, D3 and D7 are also in `spec/architecture.md` section 4. D4 and D6 are added when decided (S2, S3). D5 is recorded in the mochiba repository.
 
 ## Where to look
 

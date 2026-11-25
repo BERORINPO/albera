@@ -8,7 +8,7 @@
 
 ### Changed
 
-- **Direction (2026-11-26)**: active work moved to the explain-map tool "mochiba", which now lives in its own repository (private for now) and is no longer in ALBERA. In a private copy, the next update pull request deletes its folder. The VM / WSL2 job runtime (jobs, approval, ledger) is frozen: kept, not maintained; next review 2026-12-31. See `docs/roadmap.md`.
+- **Direction (2026-11-26)**: active work moved to the explain-map tool "mochiba", which now lives in its own repository (private for now) and is no longer in ALBERA. In a private copy, the next update pull request deletes its folder. To keep using the old copy, restore `tools/mochiba` in the update pull request before merging; it will not get updates. The VM / WSL2 job runtime (jobs, approval, ledger) is frozen: kept, not maintained; next review 2026-12-31. See `docs/roadmap.md`.
 - Rebrand Pigeonholes as ALBERA. The npm package and CLI command are now `albera`; runtime configuration uses `ALBERA_*`, with the previous `PIGEONHOLES_*` names kept as fallbacks during migration.
 - Browser preferences and canvas positions migrate from the old local-storage keys by reading them and writing to the new ALBERA keys. Existing entries are retained.
 - This release remains read-only and keeps the existing session board scope.

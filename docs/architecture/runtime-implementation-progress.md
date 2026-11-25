@@ -1,6 +1,6 @@
 # Runtime Architecture Implementation Progress
 
-**Updated:** 2026-11-06 (newest entries are at the end of this file)
+**Updated:** 2026-11-26 (newest entries are at the end of this file)
 **Working branch:** one branch per item from `origin/main` (`albera-goal` skill). Until 2026-10-28 the work was stacked on `codex/runtime-architecture-alignment`.
 **Runtime source/test HEAD audited (2026-10-28):** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
@@ -11,7 +11,7 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 
 Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 
-**2026-11-26:** 株主の決定 (D1〜D7、`docs/roadmap.md`) で、ジョブの仕組み (VM / WSL2 のジョブ、承認、台帳) は凍結した。各カードの頭に 済み / 凍結 / 不要 / やる と理由を付けた。凍結のカードは D2 の見直し (2026-12-31) まで動かさない。
+**2026-11-26:** 株主の決定 (D1〜D7、`docs/roadmap.md`) で、ジョブの仕組み (VM / WSL2 のジョブ、承認、台帳) は凍結した。各カードの頭に 凍結 / 不要 / 株主の手作業 と理由を付けた。凍結のカードは D2 の見直し (2026-12-31) まで動かさない。
 
 ### [凍結] サブスクでの最初のジョブ (stage 1 の残り)
 - 判定 (2026-11-26): 凍結。署名つきの本物のジョブは今は回さない (D2)。2026-12-31 に見直す
@@ -30,8 +30,8 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる。WSL2 版は AGM-1 を待たない
 - 取り消し: 採択は revert できる。鍵は uninstall で消える
 
-### [やる] 作業フォルダの削除
-- 判定 (2026-11-26): やる (株主の手作業)。凍結とは関係なく、ディスクの片付けだけ。消すかどうかは株主が決める
+### [株主の手作業] 作業フォルダの削除
+- 判定 (2026-11-26): 株主の手作業。凍結とは関係なく、ディスクの片付けだけ。消すかどうかは株主が決める
 - やること: `U:\dev\hyperv\clones\_legacy-probe-nana` (481 MB、旧版の取り出しで、再生成できる) をエクスプローラーで削除する。安全装置 (cc-safety-net) が、作業フォルダの外での一括削除を止めたため残っている
 - 所要: 約 1 分
 - これで進むもの: ディスクの片付けだけ
