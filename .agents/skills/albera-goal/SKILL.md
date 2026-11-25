@@ -23,7 +23,7 @@ Do not add numbered files to `docs/decisions/`; numbers 0005, 0011 and 0012 alre
 
 ## Loop
 
-1. **Observe** — read the ledger's current position and "Waiting on Yosuke" first, then git status, branch, open PRs, CI and (Codex) the session-bus inbox. Preserve all existing changes. Never touch another agent's branch or worktree.
+1. **Observe** — Before anything else, read `docs/roadmap.md`. The VM / WSL2 runtime is frozen until the 2026-12-31 review (D2): open no runtime pull requests and add no runtime cards, except the smallest fix that keeps CI green and security fixes. Then read the ledger's current position and "Waiting on Yosuke" first, then git status, branch, open PRs, CI and (Codex) the session-bus inbox. Preserve all existing changes. Never touch another agent's branch or worktree.
 2. **Define** — list unmet criteria as `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED` or `VERIFIED`. `VERIFIED` needs a recorded command and result, or reproducible manual evidence.
 3. **Plan** — choose the smallest item that unblocks others. Name the security boundary it touches and its merge tier.
 4. **Implement** — on a new branch from current `origin/main`, in its own worktree. Stack at most one level on an unmerged PR. Keep the read-only Observer separate from execution. No server or UI integration before its security phase.

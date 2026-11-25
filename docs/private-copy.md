@@ -71,9 +71,7 @@ reads the pull request first and starts them second:
 ## Keep your own changes easy to merge
 
 The update pull request merges ALBERA's changes into your branch, next to your own commits. It merges cleanly as long
-as you do not edit the same lines. Put your own settings outside the files ALBERA ships where you can: for example, the
-explain map tool (`tools/mochiba`) takes its role tables from a file you pass with `--arch`, so nothing in the tool's
-folder has to change.
+as you do not edit the same lines. Put your own settings outside the files ALBERA ships where you can.
 
 If GitHub shows a conflict, resolve it in the pull request (or locally on the `albera-update` branch) like any other.
 The workflow keeps what you commit there: next week it merges the newer ALBERA on top of your commits, and if that
@@ -109,9 +107,8 @@ git push origin HEAD:refs/heads/albera-update
 
 ## Telling ALBERA about a problem
 
-Open an issue in BERORINPO/albera with the form **From a private copy or the explain map**
-(<https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml>). The explain map page and every update
-pull request link to it.
+Open an issue in BERORINPO/albera with the form **From a private copy**
+(<https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml>). Every update pull request links to it.
 
 Issues there are **public**: anyone can read them. Describe the problem in general terms, and do not paste your
 organization's code, file or feature names, paths, screenshots, or anything from a page the tools wrote about your code.

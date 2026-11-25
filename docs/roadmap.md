@@ -1,40 +1,56 @@
-# ALBERA v1.0 Roadmap
+# ALBERA Roadmap
 
-**Updated:** 2026-11-02 (main at `bf72258`, PR #150). Rewritten to match the work since 2026-10-28; the earlier Codex-era table described a host-local Runtime that is now only phase 1.
+**Updated:** 2026-11-26. Replaces the v1.0 phase table of 2026-11-02 (still in git history).
 
-Statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `VERIFIED`. A phase is `VERIFIED` only with concrete test and acceptance evidence in `docs/progress.md`. All 20 acceptance IDs in `docs/architecture/acceptance-criteria.json` are still `NOT_VERIFIED`: none has an end-to-end run on the owner's host yet.
+Documents written before 2026-11-12 describe the old plan and are historical.
+
+No new pull requests to the frozen runtime until D2 is reopened (review 2026-12-31). Exceptions: the smallest fix that keeps CI green, and security fixes.
+
+## Where the work is now
+
+- The main work is the explain-map tool **mochiba** (a map of the code, a walk through each pull request, explain practice). It lives in its own repository, which is private for now. It is no longer in this repository.
+- ALBERA's VM / WSL2 job runtime (jobs, approval, ledger) is **frozen**: the code stays, nobody maintains it.
+- The read-only session board (`albera`) stays as it is.
+
+Why: on 2026-11-12 the owner looked again at what to build. Other tools already cover session lists, sandboxes and computer use. Only the signed approval and the ledger looked unique, and the computer-use VM parts are not needed. In interviews on 2026-11-24 the biggest pain was "I cannot explain what the AI built"; the second was "where are the outputs"; and the owner wants fewer, lighter tools.
+
+## Definition of done
+
+Done means **proof on real machines, not documents**: the tool is used for real work on the company PC and at home, and the person can show it working. Green CI, design notes and passing unit tests alone do not count. (The runtime had green CI, but no real job ever finished on a real machine.)
+
+## Stages
+
+| Stage | What | Time (rough) |
+|---|---|---|
+| S0 | Decide; keep one canonical copy of mochiba; stop the parts that are not used | ALBERA side: this change |
+| S1 | mochiba used on the company PC and at home (= minimal v1) | 2-3 weeks |
+| S2 | Open the outputs in one click | 1.5-2 weeks |
+| S3 | Fewer tools | 1-2 days, then a check after 2 weeks |
+| S4 | Optional: give it to other people (D7) | not planned |
+| S5 | Optional: a real signed job on the runtime (D2) | not planned |
+
+## Decisions (2026-11-26, by the owner, all as recommended)
+
+| # | Question | Outcome |
+|---|---|---|
+| D1 | What counts as "complete" | The explain-map tool mochiba (map, story walk-through, explain practice) is the main product. ALBERA's VM / WSL2 job runtime is frozen: code kept, not maintained. |
+| D2 | Run a real signed job on the runtime | Not now. Review on 2026-12-31. If still "no", the README keeps saying the runtime is "kept, not maintained". |
+| D3 | Where mochiba lives | Its own private repository is the one canonical copy. ALBERA's copy is removed; the README points to the separate repository. |
+| D4 | Which output locations mochiba covers | Decided later, in S2, after collecting 5 real examples. |
+| D5 | How mochiba gets onto the company PC | As a ZIP, without using `gh` there (a `--no-gh` flag). |
+| D6 | Which tools to retire | Decided in S3. |
+| D7 | Give it to other people | Not now. Revisit after S3. |
+
+D1, D2, D3 and D7 are also in `spec/architecture.md` section 4. D4 and D6 are added when decided (S2, S3). D5 is recorded in the mochiba repository.
 
 ## Where to look
 
 | Question | File |
 |---|---|
-| What happened last, what is next | `docs/architecture/runtime-implementation-progress.md` (newest at the end) |
-| What waits on Yosuke | "Waiting on Yosuke" at the top of the same file |
-| Why a choice was made | `spec/architecture.md` section 4 (one line per decision) |
-| What the finished product looks like | `docs/design/target-picture-v08b.html` |
-
-## Phases
-
-| # | Phase | What exists | What is missing | Acceptance IDs | Status |
-|---|---|---|---|---|---|
-| 1 | Runtime foundation | Host-local gateway: provider allowlist, approval, executable identity, stop adapters, bounded events, audit journal, backup/recover-tail | OS sandbox (superseded by VMs in phase 2) | — | VERIFIED |
-| 2 | Hyper-V environments | `create` without a network adapter, golden-disk clones, start/stop/destroy with reply-loss reconciliation, `retire`/`purge`, task-start checkpoints, person-approved `restore_checkpoint`, durable SQLite operation store with lease generations | Run through the installed Broker service on the owner's host | DUR-01, DUR-02, SEC-02, CMP-02 | IN_PROGRESS |
-| 3 | Approval chain | Windows Broker and Approval Authority services (.NET, named pipes refusing remote clients), receipt v2/v3, Windows Hello approver app (key enrolled 2026-10-31), tiers careful/standard, attested `environment.start` and `task.start` without a person, disposable-VM lab (`lab-vm.ps1`) incl. #23 isolation runs | Host install of both services and the first real approval | SEC-01, ORC-01 | BLOCKED (owner card) |
-| 4 | Control room | Read-only VM wall, agent fleet with AI cursors, `albera-runtime room` v0.8 with rule-based Bero, decision cards and ledger, `--require-start-approval` wiring to the real Broker/Authority | Bero wording by an LLM, human/AI input takeover lease, the full v08b picture | UI-01, UI-02 | IN_PROGRESS |
-| 5 | AI hands and real CLIs | Desktop agent loop (Computer Use, Haiku by default) with step/cost/time caps and person stop; Claude read-only launch profile verified | Codex / Claude Code / OpenCode running inside the guest as task agents | ORC-02 | IN_PROGRESS |
-| 6 | Git integration | Candidate contract, host quarantine from git bundles, target-tip fetch, fast-forward CAS promotion, Integration Service on the durable journal (#143–#150) | A real guest submission and an independent verifier runner wired in | INT-01, INT-02 | IN_PROGRESS |
-| 7 | Orchestration | Journal, lease and scheduler primitives only | Goal decomposition, dispatch, retry, VM-A → VM-B handoff | CMP-01 | NOT_STARTED |
-| 8 | Memory and knowledge | — | Scoped project memory with provenance, search without cross-project leaks | MEM-01, MEM-02, SEC-03 | NOT_STARTED |
-| 9 | Comprehension | — | Evidence that the developer understood a change, not only an AI summary | CMPH-01 | NOT_STARTED |
-| 10 | Physical machines | Design only (ADR-011, `physical-ssh` provider) | Implementation | CMP-03, SEC-04 | NOT_STARTED |
-| 11 | Integration and release | Store and placement benchmarks on the reference machine | E2E on the owner's host, performance gates, packaging, docs | PERF-01, PERF-02 | NOT_STARTED |
-
-## Next
-
-1. Owner card: install the Broker and Approval Authority services and make the first real approval (phase 3). This unblocks the first end-to-end evidence for phases 2–4.
-2. Wire the Integration Service to a real guest submission and verifier runner (phase 6).
-3. Run a real CLI agent inside a guest under `task.start` approval (phase 5).
+| Why a choice was made | `spec/architecture.md` section 4 |
+| What the frozen runtime was waiting on, and what happened to each item | "Waiting on Yosuke" at the top of `docs/architecture/runtime-implementation-progress.md` |
+| The old plan (historical) | `docs/architecture/implementation-roadmap.md`, `docs/architecture/acceptance-criteria.md` |
 
 ## Boundaries that do not change
 
-The default `albera` command stays a read-only local dashboard and never imports Runtime execution code (`npm run arch` rule 2e). Execution lives behind `albera-runtime` (loopback only, one-time code → HttpOnly cookie, Origin/CSRF checks, text-only rendering) and, for VMs, behind the Broker and Approval Authority services. A guest never decides its own policy or approval, and an AI's "done" is recorded as a claim, not as a pass.
+The default `albera` command stays a read-only local dashboard and never imports Runtime execution code (`npm run arch` rule 2e). The frozen runtime code stays in the repository and its tests keep running in CI, but it gets no new features.

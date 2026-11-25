@@ -1,3 +1,5 @@
+> **Historical.** Superseded by [docs/roadmap.md](../roadmap.md) (2026-11-26).
+
 # ALBERA — Implementation Roadmap and Work Packages
 
 **Scope:** Local-first development; existing read-only Observer remains working. **Status:** Planning only. Codex may have newer implementation changes: reconcile with current Git branch before any code modification.
